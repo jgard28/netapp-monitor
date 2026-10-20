@@ -7,6 +7,7 @@ def main() -> int:
         prog="netapp-monitor",
         description="Tray dashboard of every app's network connections, with C2 / malware red flags.")
     parser.add_argument("--tray", action="store_true", help="start minimized to the tray (for autostart)")
+    parser.add_argument("--reveal", type=int, metavar="PID", help=argparse.SUPPRESS)
     parser.add_argument("--cli", action="store_true", help="print a one-off report in the terminal")
     parser.add_argument("--json", action="store_true", help="print the report as JSON (implies --cli)")
     parser.add_argument("--all", action="store_true", help="include LAN, loopback and listening sockets")
@@ -19,7 +20,7 @@ def main() -> int:
         from .cli import run
         return run(args)
     from .gui import main as gui_main
-    return gui_main(start_hidden=args.tray)
+    return gui_main(start_hidden=args.tray, reveal_pid=args.reveal)
 
 
 if __name__ == "__main__":

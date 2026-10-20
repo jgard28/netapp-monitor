@@ -6,7 +6,8 @@ It's a threat-hunting dashboard, not a firewall. It never blocks or prompts. It 
 
 - **Tray icon** that changes color with the worst finding: green (clean), yellow (low), orange (medium), red (high)
 - **Dashboard** (click the icon, or run `netapp-monitor` again): processes sorted worst-first, each expandable into its connections, with reverse DNS
-- **Desktop notification** when something high-severity appears
+- **Pop-up alerts** for new high and medium findings. They close themselves (20s high, 12s medium), can be dismissed by hand, and open the dashboard on that app when clicked. Bursts are grouped into one summary. Mute them from the tray menu.
+- **Block an app from the internet** with a right-click. A minimal **Blocked** page lists what's blocked, with one-click Unblock.
 - **CLI / JSON** for a one-off check or scripting: `netapp-monitor --cli`
 
 ## What it flags
@@ -55,6 +56,18 @@ netapp-monitor --cli        # one-off grouped report in the terminal
 netapp-monitor --cli --all --resolve   # include LAN/loopback/listening, reverse-DNS remote IPs
 netapp-monitor --json --alerts         # flagged apps only, as JSON
 ```
+
+## Blocking apps (optional)
+
+Blocking needs a one-time setup with admin rights:
+
+```sh
+sudo ./install-blocking.sh     # or ~/.local/share/netapp-monitor/install-blocking.sh after ./install.sh
+```
+
+Then right-click an app on the **Connections** page and choose **Block internet access**. Every running process of that app is moved into its own cgroup (`/sys/fs/cgroup/netapp-blocked`). An nftables rule (`table inet netapp_monitor`) rejects all of their outgoing traffic except loopback, and their open connections are closed. Anything the app launches afterwards is blocked too. The **Blocked** page shows each blocked app with an **Unblock** button.
+
+Blocks are temporary: they last until you unblock the app, it exits, or you reboot. You'll be asked for your password through polkit (cached for a few minutes). Only your own processes can be blocked. Uninstall with `sudo ./install-blocking.sh --remove`.
 
 ## See it in action
 

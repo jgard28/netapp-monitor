@@ -16,6 +16,9 @@ python3 -c 'import psutil, PySide6' 2>/dev/null || {
 mkdir -p "$dest" "$bin" "$share/applications" "$share/icons/hicolor/scalable/apps"
 rm -rf "$dest/netapp_monitor"
 cp -r "$src/netapp_monitor" "$dest/"
+mkdir -p "$dest/data"
+cp "$src/install-blocking.sh" "$dest/"
+cp "$src/data/io.github.jgard28.netapp-monitor.policy" "$dest/data/"
 install -m644 "$src/data/netapp-monitor.svg" "$share/icons/hicolor/scalable/apps/netapp-monitor.svg"
 install -m644 "$src/data/netapp-monitor.desktop" "$share/applications/netapp-monitor.desktop"
 
@@ -26,4 +29,5 @@ EOF
 chmod +x "$bin/netapp-monitor"
 
 echo "Installed. Run: netapp-monitor   (or netapp-monitor --cli)"
+[ -x /usr/local/libexec/netapp-monitor/netapp-blockctl ] || echo "Optional, to block apps from the internet: sudo $dest/install-blocking.sh"
 echo "Autostart in the tray on Hyprland: add 'exec-once = netapp-monitor --tray' to ~/.config/hypr/autostart.conf"
