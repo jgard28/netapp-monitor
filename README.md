@@ -56,6 +56,18 @@ netapp-monitor --cli --all --resolve   # include LAN/loopback/listening, reverse
 netapp-monitor --json --alerts         # flagged apps only, as JSON
 ```
 
+## See it in action
+
+`scripts/demo-alerts.sh` runs harmless simulations of each red flag for two minutes: a fake reverse shell, a binary run from `/dev/shm`, a fake kernel thread, a blocklisted IP, port 4444, a 31337 listener and a beaconing loop. All of them only talk to benign hosts (Cloudflare, Google DNS, portquiz.net). Open the dashboard while it runs; everything is cleaned up when it exits.
+
+```sh
+scripts/demo-alerts.sh        # or: scripts/demo-alerts.sh 300
+```
+
+## Your own blocklist
+
+Put IPs (one per line, `#` for comments) in `~/.config/netapp-monitor/blocklist.txt`. The tray app picks up changes live.
+
 ## Notes and limits
 
 - **Run as your normal user.** You'll see full details for your own processes. Sockets owned by root or other users still appear, under "owned by another user". To attribute those, run the CLI with `sudo`. Don't run the GUI as root.

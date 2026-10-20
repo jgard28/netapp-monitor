@@ -117,6 +117,7 @@ class Dashboard(QMainWindow):
 
         self.timer = QTimer(self, interval=REFRESH_MS, timeout=self.tick)
         self.timer.start()
+        self.user_list_mtime = intel.user_list_mtime()
         self.load_intel()
         self.tick()
 
@@ -128,6 +129,9 @@ class Dashboard(QMainWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def tick(self):
+        if intel.user_list_mtime() != self.user_list_mtime:
+            self.user_list_mtime = intel.user_list_mtime()
+            self.load_intel()
         self.procs = analyze(snapshot(), self.blocklist, self.tracker)
         worst = max((p.severity for p in self.procs), default=0)
         flagged = sum(1 for p in self.procs if p.severity)

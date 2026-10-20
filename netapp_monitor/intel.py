@@ -15,7 +15,16 @@ FEEDS = [
      "https://raw.githubusercontent.com/stamparm/ipsum/master/levels/3.txt"),
 ]
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "netapp-monitor"
+# Your own IOCs, one IP per line; '#' starts a comment. Picked up live by the tray app.
+USER_LIST = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "netapp-monitor" / "blocklist.txt"
 MAX_AGE = 12 * 3600
+
+
+def user_list_mtime() -> float:
+    try:
+        return USER_LIST.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def parse(text: str):
@@ -44,6 +53,9 @@ def _download(url: str, path: Path):
 def load(update: bool = True) -> dict[str, str]:
     """Map of blocklisted IP to the feed that listed it. Falls back to the cache when offline."""
     blocklist: dict[str, str] = {}
+    if USER_LIST.exists():
+        for ip in parse(USER_LIST.read_text(errors="replace")):
+            blocklist[ip] = "your blocklist"
     for feed_id, label, url in FEEDS:
         path = CACHE_DIR / f"{feed_id}.txt"
         stale = not path.exists() or time.time() - path.stat().st_mtime > MAX_AGE
