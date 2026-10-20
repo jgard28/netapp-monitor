@@ -120,9 +120,10 @@ class IntelTest(unittest.TestCase):
         self.assertEqual((hit.severity, hit.detail), (MEDIUM, "bad reputation, on 7 public blocklists"))
 
     def test_user_list_reason(self):
-        hits = intel.parse_user("9.9.9.9  # seen in phishing mail\n8.8.8.8\n")
-        self.assertEqual(hits["9.9.9.9"].detail, "seen in phishing mail")
-        self.assertEqual(hits["8.8.8.8"].detail, "listed by you")
+        ips, domains = intel.parse_user("9.9.9.9  # seen in phishing mail\n8.8.8.8\nEvil.Example.com # c2\n")
+        self.assertEqual(ips["9.9.9.9"].detail, "seen in phishing mail")
+        self.assertEqual(ips["8.8.8.8"].detail, "listed by you")
+        self.assertEqual(domains["evil.example.com"].detail, "c2")
 
     def test_merge_keeps_strongest(self):
         merged = intel.Intel()

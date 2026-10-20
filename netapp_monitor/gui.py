@@ -24,6 +24,7 @@ from .appinfo import AppInfoLoader, sha256
 from .collector import (HIGH, MEDIUM, SEVERITY_COLORS, SEVERITY_NAMES, Resolver, severity_of, snapshot,
                         visible_connections)
 from .detect import BeaconTracker, analyze
+from .dns import DnsWatcher
 from .memory import Baseline, Trust
 from .notifier import Notifier
 from .panel import DetailPanel
@@ -37,7 +38,9 @@ BLOCKED_COLOR = "#8b949e"  # also used for muted (trusted) alerts
 NEW_COLOR = "#58a6ff"
 COLUMNS = ["Application / connection", "Alerts", "PID", "User", "Proto", "Local", "Remote", "Host", "State", "Scope"]
 ROLE = Qt.UserRole
-SETUP_SCRIPT = Path(__file__).resolve().parent.parent / "install-blocking.sh"
+SETUP_SCRIPT = Path(__file__).resolve().parent.parent / "install-system.sh"
+DNS_STATUS = {"starting": "DNS: connecting…", "watching": "DNS: watching lookups",
+              "needs-setup": f"DNS: off (run sudo {SETUP_SCRIPT} once)", "unavailable": "DNS: unavailable"}
 
 
 def tray_icon(severity: int) -> QIcon:
@@ -92,6 +95,7 @@ class Dashboard(QMainWindow):
         self.tracker = BeaconTracker()
         self.trust = Trust()
         self.loader = AppInfoLoader()
+        self.dns = DnsWatcher()
         self.baseline = Baseline()
         self.resolver = Resolver()
         self.expanded: set = set()
@@ -269,7 +273,7 @@ class Dashboard(QMainWindow):
         if intel.user_list_mtime() != self.user_list_mtime:
             self.user_list_mtime = intel.user_list_mtime()
             self.load_intel()
-        self.procs = analyze(snapshot(), self.blocklist, self.tracker, self.trust, self.baseline, self.loader)
+        self.procs = analyze(snapshot(), self.blocklist, self.tracker, self.trust, self.baseline, self.loader, self.dns)
         self.refresh_blocked()
         self.trust_tab.setText(f"Trusted ({len(self.trust)})" if len(self.trust) else "Trusted")
         worst = max((p.severity for p in self.procs), default=0)
@@ -279,7 +283,7 @@ class Dashboard(QMainWindow):
         learning = self.baseline.learning_left()
         new_text = f"learning normal traffic, {ago(learning)} left" if learning else f"{new} new"
         summary = (f"{len(self.procs)} apps · {internet} internet connections · {flagged} flagged · "
-                   f"{new_text} · {len(self.blocked_apps)} blocked · "
+                   f"{new_text} · {len(self.blocked_apps)} blocked · {DNS_STATUS[self.dns.status]} · "
                    f"intel: {self.blocklist.summary() or 'loading…'}")
         self.status.setText(summary)
         if self.tray:
@@ -380,7 +384,8 @@ class Dashboard(QMainWindow):
                 conns = [c for c in conns if c.new]
             if not conns and not p.alerts:
                 continue
-            hosts = {c.raddr: self.resolver.get(c.raddr) for c in conns if c.scope == "internet"}
+            # Prefer the name the app actually looked up; reverse DNS is the fallback.
+            hosts = {c.raddr: c.domain or self.resolver.get(c.raddr) for c in conns if c.scope == "internet"}
             if needle:
                 proc_text = f"{p.name} {p.exe} {p.pid} {p.user}".lower()
                 if needle not in proc_text:

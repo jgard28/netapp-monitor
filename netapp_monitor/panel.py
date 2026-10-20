@@ -68,7 +68,7 @@ class DetailPanel(QFrame):
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignTop)
         for name in ("Path", "Command", "User", "PID", "Started", "Launched by", "Package", "Integrity",
-                     "SHA-256", "Online since", "Networks", "Right now"):
+                     "SHA-256", "Online since", "Networks", "Right now", "Domains"):
             self.fields[name] = self._label()
             form.addRow(f"<span style='color:{MUTED_COLOR}'>{name}</span>", self.fields[name])
 
@@ -165,7 +165,10 @@ class DetailPanel(QFrame):
         self.chips.setVisible(bool(chips))
 
         # The verdict answers the first question: is this a program I installed?
-        if not p.exe:
+        if p.pid is None and p.name.startswith("DNS lookup"):
+            verdict, color = ("The system resolver doesn't record which app made a lookup. Check which apps "
+                              "went online around the same time, especially new ones."), WARN_COLOR
+        elif not p.exe:
             verdict, color = "Can't inspect this process (it belongs to another user).", MUTED_COLOR
         elif self.info is None:
             verdict, color = "Checking where this program came from…", MUTED_COLOR
@@ -211,6 +214,10 @@ class DetailPanel(QFrame):
         new = sum(1 for c in p.internet if c.new)
         f["Right now"].setText(f"{inet} internet connection{'s' if inet != 1 else ''}"
                                + (f", {new} to new networks" if new else ""))
+        domains = sorted({c.domain for c in p.internet if c.domain})
+        f["Domains"].setText(breakable(", ".join(domains[:8]) + (f" +{len(domains) - 8} more" if len(domains) > 8 else ""))
+                             if domains else f"<span style='color:{MUTED_COLOR}'>none seen (app may use its own DNS, "
+                                             "e.g. DNS-over-HTTPS)</span>")
 
         lines = []
         for a in p.all_alerts():

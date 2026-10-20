@@ -40,6 +40,7 @@ class Connection:
     scope: str  # internet, lan, loopback or listening
     alerts: list[Alert] = field(default_factory=list)
     new: bool = False  # first contact with this destination network
+    domain: str = ""  # the name the app looked up to get this IP, if DNS was watched
 
     @property
     def key(self):

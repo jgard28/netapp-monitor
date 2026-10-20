@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 
 from .collector import HIGH, LOW, MEDIUM, Alert, Connection, Process
+from .dns import looks_generated
 
 SUSPICIOUS_PORTS = {
     1080: "SOCKS proxy",
@@ -33,6 +34,9 @@ SHELLS = {"sh", "bash", "dash", "zsh", "fish", "ksh", "csh", "tcsh",
           "nc", "ncat", "netcat", "socat", "telnet"}
 INTERPRETER = re.compile(r"(python|perl|ruby|php|node|lua|tclsh)[\d.]*$")
 TEMP_DIRS = ("/tmp/", "/var/tmp/", "/dev/shm/")
+# Programs whose job is DNS; anyone else talking DNS straight to the internet is bypassing the resolver.
+RESOLVERS = {"systemd-resolve", "systemd-resolved", "dnsmasq", "unbound", "named", "dnscrypt-proxy",
+             "stubby", "tailscaled", "NetworkManager", "pihole-FTL", "coredns", "kresd"}
 
 HOME = os.path.expanduser("~")
 # Hidden directories that commonly hold legitimate binaries.
@@ -63,6 +67,10 @@ def check_process(proc: Process) -> list[Alert]:
             alerts.append(Alert(HIGH, f"{base} has an internet connection (possible reverse shell)"))
         elif INTERPRETER.match(base):
             alerts.append(Alert(LOW, f"Script interpreter talking to the internet: {proc.cmdline[:200]}"))
+        if proc.name not in RESOLVERS and base not in RESOLVERS:
+            direct = sorted({c.raddr for c in proc.internet if c.rport in (53, 853)})
+            if direct:
+                alerts.append(Alert(LOW, f"Does its own DNS, bypassing the system resolver ({', '.join(direct[:3])})"))
     return alerts
 
 
@@ -71,6 +79,11 @@ def check_connection(conn: Connection, blocklist: dict) -> list[Alert]:
     hit = blocklist.get(conn.raddr) if conn.raddr else None
     if hit:
         alerts.append(Alert(hit.severity, hit.describe(conn.rport), kind="intel"))
+    domain_hit = blocklist.domain_hit(conn.domain) if conn.domain and hasattr(blocklist, "domain_hit") else None
+    if domain_hit and domain_hit is not hit:
+        alerts.append(Alert(domain_hit.severity, f"{conn.domain}: {domain_hit.describe()}", kind="intel"))
+    if conn.domain and conn.scope == "internet" and looks_generated(conn.domain):
+        alerts.append(Alert(LOW, f"{conn.domain} looks randomly generated (a trait of malware domain generators)"))
     if conn.scope == "internet" and conn.rport in SUSPICIOUS_PORTS:
         alerts.append(Alert(MEDIUM, f"Remote port {conn.rport}: {SUSPICIOUS_PORTS[conn.rport]}"))
     elif conn.scope == "listening" and conn.status == "LISTEN" and conn.lport in SUSPICIOUS_PORTS:
@@ -123,10 +136,37 @@ class BeaconTracker:
         return mean if statistics.pstdev(gaps) / mean <= self.max_jitter else None
 
 
+def unattributed_lookups(dns, blocklist, procs, window: float = 600) -> list[Process]:
+    """Known-bad domains looked up recently that no current connection explains.
+
+    resolved doesn't say which app asked, so these show as one "app unknown" entry: the
+    lookup alone matters (malware often resolves its C2 before, or without, connecting).
+    """
+    if not hasattr(blocklist, "domain_hit"):
+        return []
+    explained = {c.domain for p in procs for c in p.connections if c.domain}
+    alerts, seen = [], set()
+    for _, domain in dns.lookups_since(time.time() - window):
+        if domain in seen or domain in explained:
+            continue
+        seen.add(domain)
+        hit = blocklist.domain_hit(domain)
+        if hit:
+            alerts.append(Alert(hit.severity, f"Something looked up {domain}: {hit.describe()}", kind="intel"))
+    if not alerts:
+        return []
+    return [Process(pid=None, name="DNS lookup (app unknown)", alerts=alerts)]
+
+
 def analyze(procs: list[Process], blocklist: dict | None = None,
-            tracker: BeaconTracker | None = None, trust=None, baseline=None, integrity=None) -> list[Process]:
+            tracker: BeaconTracker | None = None, trust=None, baseline=None, integrity=None,
+            dns=None) -> list[Process]:
     """Attach alerts and "new" tags to every process and connection, then sort the worst first."""
-    blocklist = blocklist or {}
+    blocklist = {} if blocklist is None else blocklist  # an Intel with only domains is falsy
+    if dns:
+        for p in procs:
+            for c in p.connections:
+                c.domain = dns.name_for(c.raddr)
     if tracker:
         tracker.observe(procs)
     for p in procs:
@@ -141,6 +181,8 @@ def analyze(procs: list[Process], blocklist: dict | None = None,
                 every = tracker.interval(p.exe or p.name, c.raddr, c.rport)
                 if every:
                     c.alerts.append(Alert(MEDIUM, f"Beaconing: reconnects every ~{every:.0f}s"))
+    if dns:
+        procs.extend(unattributed_lookups(dns, blocklist, procs))
     if trust:
         trust.apply(procs)
     if baseline:

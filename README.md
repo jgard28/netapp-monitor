@@ -15,6 +15,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks or prompts. It 
 | Severity | Check |
 |---|---|
 | high | Remote IP is a known C2 server on [abuse.ch ThreatFox](https://threatfox.abuse.ch/) (currently active C2 for Cobalt Strike, Remcos, VShell, …; the alert names the malware, port, first-seen date and confidence) or [Feodo Tracker](https://feodotracker.abuse.ch/), or is on your own blocklist |
+| high | Connection to, or lookup of, a known malware/C2 domain (ThreatFox domains, your blocklist); needs domain matching |
 | medium | Remote IP has a bad reputation: listed on 3+ public blocklists ([IPsum](https://github.com/stamparm/ipsum); mostly scanners and brute-forcers) |
 | high | Shell or netcat-style tool (`bash`, `sh`, `nc`, `socat`, …) holding an internet connection: possible reverse shell |
 | high | Executable running from `/tmp`, `/var/tmp` or `/dev/shm` |
@@ -25,6 +26,8 @@ It's a threat-hunting dashboard, not a firewall. It never blocks or prompts. It 
 | medium | Executable deleted or replaced on disk while running (also normal right after a package update, until the app restarts) |
 | low | Script interpreter (`python`, `perl`, `node`, …) talking to the internet |
 | low | Executable running from an unusual hidden directory |
+| low | Random-looking domain (possible domain-generation malware) |
+| low | App does its own DNS straight to the internet, bypassing the system resolver |
 
 Click an app to open its **detail panel**. It shows:
 
@@ -76,17 +79,32 @@ netapp-monitor --json --alerts         # flagged apps only, as JSON
 
 State lives in `~/.local/state/netapp-monitor/` (`trust.json`, `baseline.json`). Delete `baseline.json` to start learning again.
 
-## Blocking apps (optional)
+## System setup (optional, one time)
 
-Blocking needs a one-time setup with admin rights:
+Two features need system permissions, and both are enabled by one command:
 
 ```sh
-sudo ./install-blocking.sh     # or ~/.local/share/netapp-monitor/install-blocking.sh after ./install.sh
+sudo ./install-system.sh     # or ~/.local/share/netapp-monitor/install-system.sh after ./install.sh
 ```
 
-Then right-click an app on the **Connections** page and choose **Block internet access**. Every running process of that app is moved into its own cgroup (`/sys/fs/cgroup/netapp-blocked`). An nftables rule (`table inet netapp_monitor`) rejects all of their outgoing traffic except loopback, and their open connections are closed. Anything the app launches afterwards is blocked too. The **Blocked** page shows each blocked app with an **Unblock** button.
+### Blocking apps
 
-Blocks are temporary: they last until you unblock the app, it exits, or you reboot. You'll be asked for your password through polkit (cached for a few minutes). Only your own processes can be blocked. Uninstall with `sudo ./install-blocking.sh --remove`.
+Right-click an app on the **Connections** page and choose **Block internet access**. Every running process of that app is moved into its own cgroup (`/sys/fs/cgroup/netapp-blocked`). An nftables rule (`table inet netapp_monitor`) rejects all of their outgoing traffic except loopback, and their open connections are closed. Anything the app launches afterwards is blocked too. The **Blocked** page shows each blocked app with an **Unblock** button.
+
+Blocks are temporary: they last until you unblock the app, it exits, or you reboot. You'll be asked for your password through polkit (cached for a few minutes). Only your own processes can be blocked.
+
+### Domain matching
+
+A polkit rule lets your user (only you, in an active local session, with no password) subscribe to the DNS lookups systemd-resolved answers. NetApp Monitor then:
+
+- **Shows real domains** in the Host column (the name the app actually looked up, e.g. `api.github.com`) instead of reverse-DNS names like `lb-140-82-112-6-iad.github.com`.
+- **Matches domains against threat intel:** ThreatFox's ~30k malware/C2 domains, plus domains in your own `blocklist.txt`. Subdomains of a listed domain match too. A connection to a listed domain is a **high** alert.
+- **Flags lookups no connection explains.** resolved doesn't say which app asked, so a known-bad domain that was looked up but never connected to shows as **"DNS lookup (app unknown)"** at the top. Malware often resolves its C2 before, or without, connecting.
+- **Flags random-looking domains** (low severity), the kind domain-generation malware produces, judged on the registered name only, so CDN subdomains don't trip it.
+
+Apps that do their own DNS (DNS-over-HTTPS in browsers, hard-coded IPs) bypass the system resolver. Their Host column falls back to reverse DNS. An app sending plain DNS or DNS-over-TLS straight to an outside server is itself flagged (low).
+
+Uninstall both with `sudo ./install-system.sh --remove`.
 
 ## See it in action
 
@@ -98,7 +116,7 @@ scripts/demo-alerts.sh        # or: scripts/demo-alerts.sh 300
 
 ## Your own blocklist
 
-Put IPs in `~/.config/netapp-monitor/blocklist.txt`, one per line. Text after `#` is shown as the reason (`203.0.113.9  # from the phishing mail`). The tray app picks up changes live.
+Put IPs or domains in `~/.config/netapp-monitor/blocklist.txt`, one per line. Text after `#` is shown as the reason (`203.0.113.9  # from the phishing mail`). The tray app picks up changes live.
 
 ## Notes and limits
 
