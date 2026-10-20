@@ -25,6 +25,15 @@ It's a threat-hunting dashboard, not a firewall. It never blocks or prompts. It 
 | low | Script interpreter (`python`, `perl`, `node`, …) talking to the internet |
 | low | Executable running from an unusual hidden directory |
 
+Click an app to open its **detail panel**. It shows:
+
+- **A verdict on where the program came from:** "Installed by your package manager (firefox 158.0-1)", or a warning when no package owns the file.
+- **How it was launched:** the parent chain, e.g. `bash ← systemd`.
+- **Basics:** start time, user and full command line.
+- **Its SHA-256** with a VirusTotal button.
+- **What the baseline knows:** online since when, and how many networks it has contacted.
+- **Its alerts,** plus Block / Trust / Kill buttons.
+
 Right-click a connection to look the IP up on AbuseIPDB, VirusTotal or Shodan. Right-click an app to copy its path or command line, look up its SHA-256 on VirusTotal (only the hash leaves your machine; the file is never uploaded), or kill it.
 
 ## Install

@@ -11,6 +11,7 @@ import psutil
 
 LOW, MEDIUM, HIGH = 1, 2, 3
 SEVERITY_NAMES = {0: "ok", LOW: "low", MEDIUM: "medium", HIGH: "high"}
+SEVERITY_COLORS = {0: "#3fb950", LOW: "#d29922", MEDIUM: "#f0883e", HIGH: "#f85149"}
 
 CGNAT = ipaddress.ip_network("100.64.0.0/10")  # Tailscale and carrier-grade NAT
 # The app has already closed these; the kernel is only finishing the TCP teardown, sometimes

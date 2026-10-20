@@ -1,7 +1,6 @@
 """Tray icon plus a dashboard window listing every app's network connections."""
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import signal
@@ -16,22 +15,24 @@ from PySide6.QtGui import QBrush, QColor, QDesktopServices, QGuiApplication, QIc
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
-    QMenu, QMessageBox, QPushButton, QStackedWidget, QSystemTrayIcon, QTreeWidget, QTreeWidgetItem,
+    QMenu, QMessageBox, QPushButton, QSplitter, QStackedWidget, QSystemTrayIcon, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from . import blockctl, intel
-from .collector import HIGH, MEDIUM, SEVERITY_NAMES, Resolver, severity_of, snapshot, visible_connections
+from .appinfo import sha256
+from .collector import (HIGH, MEDIUM, SEVERITY_COLORS, SEVERITY_NAMES, Resolver, severity_of, snapshot,
+                        visible_connections)
 from .detect import BeaconTracker, analyze
 from .memory import Baseline, Trust
 from .notifier import Notifier
+from .panel import DetailPanel
 
 APP_ID = "netapp-monitor"
 REFRESH_MS = 3000
 INTEL_REFRESH_MS = 30 * 60 * 1000  # each feed only re-downloads once its cache is stale
 POPUP_TIMEOUT_MS = {HIGH: 20000, MEDIUM: 12000}  # pop-ups close themselves after this
 POPUP_BATCH = 3  # more new alerts than this in one refresh become a single summary pop-up
-SEVERITY_COLORS = {0: "#3fb950", 1: "#d29922", 2: "#f0883e", 3: "#f85149"}
 BLOCKED_COLOR = "#8b949e"  # also used for muted (trusted) alerts
 NEW_COLOR = "#58a6ff"
 COLUMNS = ["Application / connection", "Alerts", "PID", "User", "Proto", "Local", "Remote", "Host", "State", "Scope"]
@@ -55,14 +56,6 @@ def tray_icon(severity: int) -> QIcon:
     p.drawEllipse(26, 26, 12, 12)
     p.end()
     return QIcon(pix)
-
-
-def sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def ago(seconds: float) -> str:
@@ -104,6 +97,7 @@ class Dashboard(QMainWindow):
         self.auto_expanded: set = set()
         self.notified: set = set()
         self.helper: QProcess | None = None
+        self.selected = None  # (pid, exe) of the app shown in the detail panel
 
         # View switcher: Connections | Blocked
         self.conn_tab = QPushButton("Connections", checkable=True, checked=True)
@@ -191,12 +185,22 @@ class Dashboard(QMainWindow):
         for col, width in enumerate((230, 380, 70, 70, 50, 180, 190, 220, 100)):
             self.tree.setColumnWidth(col, width)
         header.setStretchLastSection(True)
+        self.tree.currentItemChanged.connect(self.select_item)
+
+        self.details = DetailPanel(self)
+        self.details.hide()
+        splitter = QSplitter()
+        splitter.addWidget(self.tree)
+        splitter.addWidget(self.details)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([800, 420])
 
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(bar)
-        layout.addWidget(self.tree, 1)
+        layout.addWidget(splitter, 1)
         return page
 
     def _blocked_page(self):
@@ -415,9 +419,27 @@ class Dashboard(QMainWindow):
                 self.auto_expanded.add(key)
                 self.expanded.add(key)
             item.setExpanded(key in self.expanded)
+            if key == self.selected:
+                self.tree.setCurrentItem(item)
+                self.details.show_process(p)
         self.tree.blockSignals(False)
         self.tree.setUpdatesEnabled(True)
         self.tree.verticalScrollBar().setValue(scroll)
+
+    def select_item(self, item, _previous=None):
+        if item is None:
+            return
+        proc = (item.parent() or item).data(1, ROLE)
+        self.selected = (proc.pid, proc.exe or proc.name)
+        self.details.show_process(proc)
+        self.details.show()
+
+    def close_details(self):
+        self.selected = None
+        self.details.hide()
+        self.tree.blockSignals(True)
+        self.tree.setCurrentItem(None)
+        self.tree.blockSignals(False)
 
     def populate_blocked(self):
         self.blocked_tree.clear()
