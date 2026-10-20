@@ -7,8 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
 from . import intel
-from .collector import SEVERITY_NAMES, reverse_dns, snapshot, visible_connections
+from .collector import SEVERITY_NAMES, severity_of, reverse_dns, snapshot, visible_connections
 from .detect import analyze
+from .memory import Trust
 
 COLORS = {0: "", 1: "\033[33m", 2: "\033[38;5;208m", 3: "\033[31;1m"}
 DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
@@ -16,7 +17,7 @@ DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
 
 def run(args) -> int:
     blocklist = intel.load(update=not args.offline)
-    procs = analyze(snapshot(), blocklist)
+    procs = analyze(snapshot(), blocklist, trust=Trust())
     rows = [(p, visible_connections(p, args.all)) for p in procs]
     rows = [(p, conns) for p, conns in rows if conns or p.alerts]
     if args.alerts:
@@ -46,13 +47,13 @@ def run(args) -> int:
         print(paint(COLORS[p.severity] or BOLD, f"{p.name} (pid {p.pid}, {p.user or '?'}){sev}"),
               paint(DIM, p.exe))
         for a in p.alerts:
-            print("    " + paint(COLORS[a.severity], f"! {a.message}"))
+            print("    " + paint(DIM if a.muted else COLORS[a.severity], f"! {'(muted) ' if a.muted else ''}{a.message}"))
         for c in conns:
             host = hosts.get(c.raddr, "")
             line = f"    {c.proto:<3}  {c.local:<22} -> {c.remote or '*':<22} {c.status:<11} {c.scope:<9} {host}"
-            print(paint(COLORS[max((a.severity for a in c.alerts), default=0)], line.rstrip()))
+            print(paint(COLORS[severity_of(c.alerts)], line.rstrip()))
             for a in c.alerts:
-                print("        " + paint(COLORS[a.severity], f"! {a.message}"))
+                print("        " + paint(DIM if a.muted else COLORS[a.severity], f"! {'(muted) ' if a.muted else ''}{a.message}"))
     flagged = sum(1 for p, _ in rows if p.severity)
     internet = sum(len(p.internet) for p in procs)
     print(paint(DIM, f"\n{len(rows)} apps shown, {internet} internet connections, "

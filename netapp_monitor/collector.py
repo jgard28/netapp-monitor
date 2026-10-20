@@ -23,6 +23,8 @@ CLOSED_STATES = {psutil.CONN_TIME_WAIT, psutil.CONN_FIN_WAIT1, psutil.CONN_FIN_W
 class Alert:
     severity: int
     message: str
+    kind: str = ""  # "intel" for threat-intel hits, "never-mute" for signs trust can't explain away
+    muted: bool = False  # the user trusts this app or destination
 
 
 @dataclass
@@ -36,6 +38,7 @@ class Connection:
     status: str
     scope: str  # internet, lan, loopback or listening
     alerts: list[Alert] = field(default_factory=list)
+    new: bool = False  # first contact with this destination network
 
     @property
     def key(self):
@@ -60,6 +63,7 @@ class Process:
     user: str = ""
     connections: list[Connection] = field(default_factory=list)
     alerts: list[Alert] = field(default_factory=list)
+    new: bool = False  # first time this app reached the internet
 
     @property
     def internet(self):
@@ -70,7 +74,15 @@ class Process:
 
     @property
     def severity(self):
-        return max((a.severity for a in self.all_alerts()), default=0)
+        return max((a.severity for a in self.all_alerts() if not a.muted), default=0)
+
+    @property
+    def has_new(self):
+        return self.new or any(c.new for c in self.connections)
+
+
+def severity_of(alerts) -> int:
+    return max((a.severity for a in alerts if not a.muted), default=0)
 
 
 def _endpoint(ip, port):

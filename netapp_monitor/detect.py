@@ -56,7 +56,7 @@ def check_process(proc: Process) -> list[Alert]:
     elif "/." in exe and not exe.startswith(HIDDEN_OK) and "/.venv/" not in exe:
         alerts.append(Alert(LOW, f"Runs from a hidden directory: {exe}"))
     if proc.cmdline.startswith("[") and exe:
-        alerts.append(Alert(HIGH, f"Disguised as a kernel thread: '{proc.cmdline}' is really {exe}"))
+        alerts.append(Alert(HIGH, f"Disguised as a kernel thread: '{proc.cmdline}' is really {exe}", kind="never-mute"))
 
     if proc.internet:
         if base in SHELLS or proc.name in SHELLS:
@@ -70,7 +70,7 @@ def check_connection(conn: Connection, blocklist: dict) -> list[Alert]:
     alerts = []
     hit = blocklist.get(conn.raddr) if conn.raddr else None
     if hit:
-        alerts.append(Alert(hit.severity, hit.describe(conn.rport)))
+        alerts.append(Alert(hit.severity, hit.describe(conn.rport), kind="intel"))
     if conn.scope == "internet" and conn.rport in SUSPICIOUS_PORTS:
         alerts.append(Alert(MEDIUM, f"Remote port {conn.rport}: {SUSPICIOUS_PORTS[conn.rport]}"))
     elif conn.scope == "listening" and conn.status == "LISTEN" and conn.lport in SUSPICIOUS_PORTS:
@@ -124,8 +124,8 @@ class BeaconTracker:
 
 
 def analyze(procs: list[Process], blocklist: dict | None = None,
-            tracker: BeaconTracker | None = None) -> list[Process]:
-    """Attach alerts to every process and connection, then sort the worst to the top."""
+            tracker: BeaconTracker | None = None, trust=None, baseline=None) -> list[Process]:
+    """Attach alerts and "new" tags to every process and connection, then sort the worst first."""
     blocklist = blocklist or {}
     if tracker:
         tracker.observe(procs)
@@ -137,5 +137,9 @@ def analyze(procs: list[Process], blocklist: dict | None = None,
                 every = tracker.interval(p.exe or p.name, c.raddr, c.rport)
                 if every:
                     c.alerts.append(Alert(MEDIUM, f"Beaconing: reconnects every ~{every:.0f}s"))
+    if trust:
+        trust.apply(procs)
+    if baseline:
+        baseline.observe(procs)
     procs.sort(key=lambda p: (-p.severity, -len(p.internet), p.name.lower()))
     return procs

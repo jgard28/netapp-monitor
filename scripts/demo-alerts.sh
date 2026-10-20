@@ -45,7 +45,7 @@ pids+=($!); echo "  [high]    python disguised as [kworker/u8:3-events]         
 
 # HIGH: destination on a threat-intel blocklist (your personal list, temporarily).
 mkdir -p "$(dirname "$LIST")"
-echo "8.8.4.4 $MARK" >> "$LIST"
+echo "8.8.4.4 $MARK: pretend C2 server" >> "$LIST"
 hold 8.8.4.4 53 &
 pids+=($!); echo "  [high]    connection to a blocklisted IP                     -> 8.8.4.4:53"
 

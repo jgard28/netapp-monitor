@@ -21,8 +21,9 @@ from PySide6.QtWidgets import (
 )
 
 from . import blockctl, intel
-from .collector import HIGH, MEDIUM, SEVERITY_NAMES, Resolver, snapshot, visible_connections
+from .collector import HIGH, MEDIUM, SEVERITY_NAMES, Resolver, severity_of, snapshot, visible_connections
 from .detect import BeaconTracker, analyze
+from .memory import Baseline, Trust
 from .notifier import Notifier
 
 APP_ID = "netapp-monitor"
@@ -31,8 +32,9 @@ INTEL_REFRESH_MS = 30 * 60 * 1000  # each feed only re-downloads once its cache 
 POPUP_TIMEOUT_MS = {HIGH: 20000, MEDIUM: 12000}  # pop-ups close themselves after this
 POPUP_BATCH = 3  # more new alerts than this in one refresh become a single summary pop-up
 SEVERITY_COLORS = {0: "#3fb950", 1: "#d29922", 2: "#f0883e", 3: "#f85149"}
-BLOCKED_COLOR = "#8b949e"
-COLUMNS = ["Application / connection", "PID", "User", "Proto", "Local", "Remote", "Host", "State", "Scope", "Alerts"]
+BLOCKED_COLOR = "#8b949e"  # also used for muted (trusted) alerts
+NEW_COLOR = "#58a6ff"
+COLUMNS = ["Application / connection", "Alerts", "PID", "User", "Proto", "Local", "Remote", "Host", "State", "Scope"]
 ROLE = Qt.UserRole
 SETUP_SCRIPT = Path(__file__).resolve().parent.parent / "install-blocking.sh"
 
@@ -95,6 +97,8 @@ class Dashboard(QMainWindow):
         self.blocked_pids: set[int] = set()
         self.blocked_apps: list[dict] = []
         self.tracker = BeaconTracker()
+        self.trust = Trust()
+        self.baseline = Baseline()
         self.resolver = Resolver()
         self.expanded: set = set()
         self.auto_expanded: set = set()
@@ -104,20 +108,22 @@ class Dashboard(QMainWindow):
         # View switcher: Connections | Blocked
         self.conn_tab = QPushButton("Connections", checkable=True, checked=True)
         self.block_tab = QPushButton("Blocked", checkable=True)
-        tabs = QButtonGroup(self)
-        tabs.setExclusive(True)
-        for i, b in enumerate((self.conn_tab, self.block_tab)):
-            b.setFlat(True)
-            tabs.addButton(b, i)
-        tabs.idClicked.connect(self.switch_page)
+        self.trust_tab = QPushButton("Trusted", checkable=True)
+        self.tabs = (self.conn_tab, self.block_tab, self.trust_tab)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
         switcher = QHBoxLayout()
-        switcher.addWidget(self.conn_tab)
-        switcher.addWidget(self.block_tab)
+        for i, b in enumerate(self.tabs):
+            b.setFlat(True)
+            group.addButton(b, i)
+            switcher.addWidget(b)
+        group.idClicked.connect(self.switch_page)
         switcher.addStretch(1)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._connections_page())
         self.pages.addWidget(self._blocked_page())
+        self.pages.addWidget(self._trusted_page())
 
         self.status = QLabel()
         layout = QVBoxLayout()
@@ -159,15 +165,17 @@ class Dashboard(QMainWindow):
         self.search = QLineEdit(placeholderText="Filter by app, path, PID, IP or host…")
         self.show_all = QCheckBox("Include LAN / loopback / listening")
         self.alerts_only = QCheckBox("Flagged only")
+        self.new_only = QCheckBox("New only")
+        self.new_only.setToolTip("Apps and destinations first seen in the last 24 hours")
         self.live = QCheckBox("Live", checked=True)
         refresh = QPushButton("Refresh")
-        for w in (self.search, self.show_all, self.alerts_only):
+        for w in (self.search, self.show_all, self.alerts_only, self.new_only):
             (w.textChanged if w is self.search else w.toggled).connect(self.populate)
         refresh.clicked.connect(self.tick)
 
         bar = QHBoxLayout()
         bar.addWidget(self.search, 1)
-        for w in (self.show_all, self.alerts_only, self.live, refresh):
+        for w in (self.show_all, self.alerts_only, self.new_only, self.live, refresh):
             bar.addWidget(w)
 
         self.tree = QTreeWidget()
@@ -180,7 +188,7 @@ class Dashboard(QMainWindow):
         self.tree.itemCollapsed.connect(lambda i: self.expanded.discard(i.data(0, ROLE)))
         header = self.tree.header()
         header.setSectionResizeMode(QHeaderView.Interactive)
-        for col, width in enumerate((260, 70, 80, 50, 190, 210, 230, 100, 80)):
+        for col, width in enumerate((230, 380, 70, 70, 50, 180, 190, 220, 100)):
             self.tree.setColumnWidth(col, width)
         header.setStretchLastSection(True)
 
@@ -220,6 +228,31 @@ class Dashboard(QMainWindow):
         layout.addWidget(self.blocked_empty, 1)
         return page
 
+    def _trusted_page(self):
+        intro = QLabel("Alerts from trusted apps and destinations are muted: still listed, greyed out, "
+                       "with no pop-ups. Known C2 servers from threat intel always alert.")
+        intro.setWordWrap(True)
+        self.trusted_tree = QTreeWidget()
+        self.trusted_tree.setHeaderLabels(["Trusted", "Type", "Since", "Details", ""])
+        self.trusted_tree.setRootIsDecorated(False)
+        for col, width in enumerate((220, 100, 110, 520, 110)):
+            self.trusted_tree.setColumnWidth(col, width)
+        self.trusted_tree.header().setStretchLastSection(False)
+        self.trusted_tree.header().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.trusted_empty = QLabel("Nothing is trusted yet.\n\nIf an app or destination keeps raising alerts "
+                                    "you know are fine, right-click it on the Connections page and choose "
+                                    "“Trust this app” or “Trust this destination”.")
+        self.trusted_empty.setAlignment(Qt.AlignCenter)
+        self.trusted_empty.setWordWrap(True)
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(intro)
+        layout.addWidget(self.trusted_tree, 1)
+        layout.addWidget(self.trusted_empty, 1)
+        return page
+
     # --- data -----------------------------------------------------------------
 
     def load_intel(self):
@@ -231,13 +264,18 @@ class Dashboard(QMainWindow):
         if intel.user_list_mtime() != self.user_list_mtime:
             self.user_list_mtime = intel.user_list_mtime()
             self.load_intel()
-        self.procs = analyze(snapshot(), self.blocklist, self.tracker)
+        self.procs = analyze(snapshot(), self.blocklist, self.tracker, self.trust, self.baseline)
         self.refresh_blocked()
+        self.trust_tab.setText(f"Trusted ({len(self.trust)})" if len(self.trust) else "Trusted")
         worst = max((p.severity for p in self.procs), default=0)
         flagged = sum(1 for p in self.procs if p.severity)
+        new = sum(1 for p in self.procs if p.has_new)
         internet = sum(len(p.internet) for p in self.procs)
+        learning = self.baseline.learning_left()
+        new_text = f"learning normal traffic, {ago(learning)} left" if learning else f"{new} new"
         summary = (f"{len(self.procs)} apps · {internet} internet connections · {flagged} flagged · "
-                   f"{len(self.blocked_apps)} blocked · intel: {self.blocklist.summary() or 'loading…'}")
+                   f"{new_text} · {len(self.blocked_apps)} blocked · "
+                   f"intel: {self.blocklist.summary() or 'loading…'}")
         self.status.setText(summary)
         if self.tray:
             self.tray.setIcon(tray_icon(worst))
@@ -269,7 +307,7 @@ class Dashboard(QMainWindow):
             for a in p.all_alerts():
                 # Ignore numbers like the beacon interval so a drifting value doesn't re-alert.
                 key = (p.exe or p.name, re.sub(r"~\d+s", "", a.message))
-                if a.severity >= MEDIUM and key not in self.notified:
+                if a.severity >= MEDIUM and not a.muted and key not in self.notified:
                     self.notified.add(key)
                     fresh.append((p, a))
         if not fresh or not self.popups.isChecked():
@@ -311,13 +349,16 @@ class Dashboard(QMainWindow):
     # --- view -----------------------------------------------------------------
 
     def switch_page(self, index):
-        (self.conn_tab, self.block_tab)[index].setChecked(True)
+        self.tabs[index].setChecked(True)
         self.pages.setCurrentIndex(index)
         self.populate()
 
     def populate(self):
         if self.pages.currentIndex() == 1:
             self.populate_blocked()
+            return
+        if self.pages.currentIndex() == 2:
+            self.populate_trusted()
             return
         needle = self.search.text().strip().lower()
         scroll = self.tree.verticalScrollBar().value()
@@ -327,7 +368,11 @@ class Dashboard(QMainWindow):
         for p in self.procs:
             if self.alerts_only.isChecked() and not p.severity:
                 continue
+            if self.new_only.isChecked() and not p.has_new:
+                continue
             conns = visible_connections(p, self.show_all.isChecked())
+            if self.new_only.isChecked() and not p.new:
+                conns = [c for c in conns if c.new]
             if not conns and not p.alerts:
                 continue
             hosts = {c.raddr: self.resolver.get(c.raddr) for c in conns if c.scope == "internet"}
@@ -341,11 +386,13 @@ class Dashboard(QMainWindow):
 
             key = (p.pid, p.exe or p.name)
             blocked = p.pid in self.blocked_pids
-            alert_text = "; ".join((["Blocked from the internet"] if blocked else []) +
-                                   [a.message for a in p.alerts])
+            tags = (["Blocked from the internet"] if blocked else []) + \
+                   (["New: first time online"] if p.new else []) + \
+                   (["Trusted app"] if p.exe and p.exe in self.trust.apps else [])
+            alert_text = "; ".join(tags + [self._alert_text(a) for a in p.alerts])
             n_inet = sum(1 for c in conns if c.scope == "internet")
-            item = QTreeWidgetItem([p.name, str(p.pid or ""), p.user, "", "", f"{n_inet} internet",
-                                    "", "", "", alert_text])
+            item = QTreeWidgetItem([p.name, alert_text, str(p.pid or ""), p.user, "", "", f"{n_inet} internet",
+                                    "", "", ""])
             item.setData(0, ROLE, key)
             item.setData(1, ROLE, p)
             item.setToolTip(0, "\n".join(filter(None, [p.exe, p.cmdline] +
@@ -353,12 +400,14 @@ class Dashboard(QMainWindow):
             font = item.font(0)
             font.setBold(True)
             item.setFont(0, font)
-            self._color(item, p.severity, blocked)
+            self._color(item, p.severity, blocked, p.has_new, any(a.muted for a in p.alerts))
             for c in conns:
-                child = QTreeWidgetItem(["", "", "", c.proto, c.local, c.remote, hosts.get(c.raddr, ""),
-                                         c.status, c.scope, "; ".join(a.message for a in c.alerts)])
+                ctags = (["New destination"] if c.new and not p.new else []) + \
+                        (["Trusted destination"] if c.raddr in self.trust.destinations else [])
+                child = QTreeWidgetItem(["", "; ".join(ctags + [self._alert_text(a) for a in c.alerts]), "", "",
+                                         c.proto, c.local, c.remote, hosts.get(c.raddr, ""), c.status, c.scope])
                 child.setData(1, ROLE, c)
-                self._color(child, max((a.severity for a in c.alerts), default=0), blocked)
+                self._color(child, severity_of(c.alerts), blocked, c.new, any(a.muted for a in c.alerts))
                 item.addChild(child)
             self.tree.addTopLevelItem(item)
             # Flagged apps auto-expand the first time they appear; afterwards the user's choice sticks.
@@ -385,13 +434,43 @@ class Dashboard(QMainWindow):
             button.clicked.connect(lambda _=False, pids=app["pids"]: self.run_helper(["unblock", *map(str, pids)]))
             self.blocked_tree.setItemWidget(item, 4, button)
 
+    def populate_trusted(self):
+        self.trusted_tree.clear()
+        rows = [("app", exe, since) for exe, since in self.trust.apps.items()] + \
+               [("destination", ip, since) for ip, since in self.trust.destinations.items()]
+        self.trusted_tree.setVisible(bool(rows))
+        self.trusted_empty.setVisible(not rows)
+        now = time.time()
+        for kind, key, since in sorted(rows, key=lambda r: -r[2]):
+            if kind == "app":
+                values = [os.path.basename(key), "App", ago(now - since), key]
+            else:
+                values = [key, "Destination", ago(now - since), self.resolver.get(key) or "any app, this IP"]
+            item = QTreeWidgetItem(values + [""])
+            self.trusted_tree.addTopLevelItem(item)
+            button = QPushButton("Remove")
+            button.setToolTip("Stop trusting; its alerts come back")
+            button.clicked.connect(lambda _=False, k=kind, v=key: self.set_trust(k, v, False))
+            self.trusted_tree.setItemWidget(item, 4, button)
+
     @staticmethod
-    def _color(item, severity, blocked=False):
-        if not severity and not blocked:
+    def _alert_text(alert):
+        return f"(muted) {alert.message}" if alert.muted else alert.message
+
+    @staticmethod
+    def _color(item, severity, blocked=False, new=False, muted=False):
+        if muted and not severity:
+            item.setForeground(1, QBrush(QColor(BLOCKED_COLOR)))
+        if severity:
+            color = SEVERITY_COLORS[severity]
+        elif blocked:
+            color = BLOCKED_COLOR
+        elif new:
+            color = NEW_COLOR
+        else:
             return
-        color = QColor(BLOCKED_COLOR if blocked and not severity else SEVERITY_COLORS[severity])
         for col in range(len(COLUMNS)):
-            item.setForeground(col, QBrush(color))
+            item.setForeground(col, QBrush(QColor(color)))
 
     def context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -404,6 +483,10 @@ class Dashboard(QMainWindow):
                 menu.addAction("Unblock internet access", lambda: self.unblock_app(obj))
             elif obj.pid:
                 menu.addAction("Block internet access…", lambda: self.block_app(obj))
+            if obj.exe in self.trust.apps:
+                menu.addAction("Stop trusting this app", lambda: self.set_trust("app", obj.exe, False))
+            elif obj.exe:
+                menu.addAction("Trust this app (mute its alerts)", lambda: self.set_trust("app", obj.exe, True))
             menu.addSeparator()
             if obj.exe:
                 menu.addAction("Copy executable path", lambda: QGuiApplication.clipboard().setText(obj.exe))
@@ -415,6 +498,11 @@ class Dashboard(QMainWindow):
                 menu.addAction(f"Kill {obj.name} (pid {obj.pid})…", lambda: self.kill(obj))
         elif obj.raddr:
             ip = obj.raddr
+            if ip in self.trust.destinations:
+                menu.addAction(f"Stop trusting {ip}", lambda: self.set_trust("destination", ip, False))
+            else:
+                menu.addAction(f"Trust this destination ({ip})", lambda: self.set_trust("destination", ip, True))
+            menu.addSeparator()
             menu.addAction(f"Copy {ip}", lambda: QGuiApplication.clipboard().setText(ip))
             menu.addAction("Look up on AbuseIPDB", lambda: self.open_url(f"https://www.abuseipdb.com/check/{ip}"))
             menu.addAction("Look up on VirusTotal", lambda: self.open_url(f"https://www.virustotal.com/gui/ip-address/{ip}"))
@@ -439,6 +527,11 @@ class Dashboard(QMainWindow):
             "You can undo this on the Blocked page.")
         if answer == QMessageBox.Yes:
             self.run_helper(["block", *map(str, pids)])
+
+    def set_trust(self, kind, key, trusted):
+        (self.trust.set_app if kind == "app" else self.trust.set_destination)(key, trusted)
+        self.tick()
+        self.populate()
 
     def unblock_app(self, proc):
         pids = [p for app in self.blocked_apps if proc.pid in app["pids"] for p in app["pids"]] or [proc.pid]
@@ -538,6 +631,7 @@ def main(start_hidden: bool = False, reveal_pid: int | None = None) -> int:
         sock.disconnected.connect(sock.deleteLater)
 
     server.newConnection.connect(on_connection)
+    app.aboutToQuit.connect(window.baseline.save)
     if reveal_pid is not None:
         window.reveal(reveal_pid or None)
     elif not (start_hidden and has_tray):
