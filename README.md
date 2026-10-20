@@ -18,6 +18,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks or prompts. It 
 | medium | Remote IP has a bad reputation: listed on 3+ public blocklists ([IPsum](https://github.com/stamparm/ipsum); mostly scanners and brute-forcers) |
 | high | Shell or netcat-style tool (`bash`, `sh`, `nc`, `socat`, …) holding an internet connection: possible reverse shell |
 | high | Executable running from `/tmp`, `/var/tmp` or `/dev/shm` |
+| high | Program file differs from the copy its package installed: its SHA-256 doesn't match the package database (pacman mtree / dpkg md5sums), so it may have been tampered with or trojanized. Never muted by trust |
 | high | Process disguising itself as a kernel thread (`[kworker/0:1]` with a real binary behind it) |
 | medium | **Beaconing**: an app opens fresh connections to the same host at a steady interval (low jitter), the classic C2 check-in pattern |
 | medium | Remote or listening port associated with backdoors, Metasploit, Cobalt Strike, IRC botnets, Tor or mining pools |
@@ -30,7 +31,8 @@ Click an app to open its **detail panel**. It shows:
 - **A verdict on where the program came from:** "Installed by your package manager (firefox 158.0-1)", or a warning when no package owns the file.
 - **How it was launched:** the parent chain, e.g. `bash ← systemd`.
 - **Basics:** start time, user and full command line.
-- **Its SHA-256** with a VirusTotal button.
+- **Integrity:** whether the program file, and every other file in its package, still matches what the package installed (`pacman -Qkk` / `dpkg --verify`). On Linux this is stronger evidence than VirusTotal, which usually hasn't seen distro-built binaries.
+- **Its SHA-256** with a VirusTotal button (most useful for programs that didn't come from a package).
 - **What the baseline knows:** online since when, and how many networks it has contacted.
 - **Its alerts,** plus Block / Trust / Kill buttons.
 

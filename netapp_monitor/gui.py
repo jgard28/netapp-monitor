@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import blockctl, intel
-from .appinfo import sha256
+from .appinfo import AppInfoLoader, sha256
 from .collector import (HIGH, MEDIUM, SEVERITY_COLORS, SEVERITY_NAMES, Resolver, severity_of, snapshot,
                         visible_connections)
 from .detect import BeaconTracker, analyze
@@ -91,6 +91,7 @@ class Dashboard(QMainWindow):
         self.blocked_apps: list[dict] = []
         self.tracker = BeaconTracker()
         self.trust = Trust()
+        self.loader = AppInfoLoader()
         self.baseline = Baseline()
         self.resolver = Resolver()
         self.expanded: set = set()
@@ -268,7 +269,7 @@ class Dashboard(QMainWindow):
         if intel.user_list_mtime() != self.user_list_mtime:
             self.user_list_mtime = intel.user_list_mtime()
             self.load_intel()
-        self.procs = analyze(snapshot(), self.blocklist, self.tracker, self.trust, self.baseline)
+        self.procs = analyze(snapshot(), self.blocklist, self.tracker, self.trust, self.baseline, self.loader)
         self.refresh_blocked()
         self.trust_tab.setText(f"Trusted ({len(self.trust)})" if len(self.trust) else "Trusted")
         worst = max((p.severity for p in self.procs), default=0)

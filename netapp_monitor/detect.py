@@ -124,13 +124,17 @@ class BeaconTracker:
 
 
 def analyze(procs: list[Process], blocklist: dict | None = None,
-            tracker: BeaconTracker | None = None, trust=None, baseline=None) -> list[Process]:
+            tracker: BeaconTracker | None = None, trust=None, baseline=None, integrity=None) -> list[Process]:
     """Attach alerts and "new" tags to every process and connection, then sort the worst first."""
     blocklist = blocklist or {}
     if tracker:
         tracker.observe(procs)
     for p in procs:
         p.alerts = check_process(p)
+        if integrity and p.internet:
+            tampered = integrity.alert_for(p)
+            if tampered:
+                p.alerts.append(tampered)
         for c in p.connections:
             c.alerts = check_connection(c, blocklist)
             if tracker and c.scope == "internet":

@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
     QFormLayout, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .appinfo import AppInfoLoader, parent_chain, started
-from .collector import SEVERITY_COLORS, SEVERITY_NAMES
+from .appinfo import parent_chain, started
+from .collector import HIGH, SEVERITY_COLORS, SEVERITY_NAMES
 
 OK_COLOR, WARN_COLOR, NEW_COLOR, MUTED_COLOR = "#3fb950", "#d29922", "#58a6ff", "#8b949e"
 
@@ -19,6 +19,9 @@ OK_COLOR, WARN_COLOR, NEW_COLOR, MUTED_COLOR = "#3fb950", "#d29922", "#58a6ff", 
 def chip(text: str, color: str) -> str:
     return (f'<span style="background-color:{color}; color:#0d1117; font-weight:bold;">'
             f'&nbsp;{html.escape(text)}&nbsp;</span>')
+
+
+esc_ = html.escape
 
 
 def breakable(text: str, every: int = 24) -> str:
@@ -46,8 +49,7 @@ class DetailPanel(QFrame):
         self.dash = dashboard
         self.proc = None
         self.info: dict | None = None
-        self.loader = AppInfoLoader()
-        self.loader.loaded.connect(self._loaded)
+        dashboard.loader.loaded.connect(self._loaded)
         self.setMinimumWidth(360)
         self.setFrameShape(QFrame.StyledPanel)
 
@@ -65,7 +67,7 @@ class DetailPanel(QFrame):
         self.fields = {}
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignTop)
-        for name in ("Path", "Command", "User", "PID", "Started", "Launched by", "Package",
+        for name in ("Path", "Command", "User", "PID", "Started", "Launched by", "Package", "Integrity",
                      "SHA-256", "Online since", "Networks", "Right now"):
             self.fields[name] = self._label()
             form.addRow(f"<span style='color:{MUTED_COLOR}'>{name}</span>", self.fields[name])
@@ -135,7 +137,7 @@ class DetailPanel(QFrame):
         if changed:
             self.info = None
             if proc.exe:
-                self.loader.request(proc.exe)
+                self.dash.loader.request(proc.exe, verify=True)
         self._render()
 
     def _loaded(self, exe, info):
@@ -186,9 +188,11 @@ class DetailPanel(QFrame):
                                             for n, pid in chain) or "—")
         if self.info is None:
             f["Package"].setText("…")
+            f["Integrity"].setText("…")
             f["SHA-256"].setText("…")
         else:
             f["Package"].setText(esc(self.info["package"] or "none"))
+            f["Integrity"].setText(self._integrity_text())
             sha = self.info["sha256"]
             f["SHA-256"].setText(f"<code>{breakable(sha, 16)}</code>" if sha else esc(f"can't read file: {self.info['error']}"))
         self.vt.setEnabled(bool(self.info and self.info["sha256"]))
@@ -221,6 +225,33 @@ class DetailPanel(QFrame):
         self.trust_btn.setText("Stop trusting" if trusted else "Trust")
         self.trust_btn.setEnabled(bool(p.exe))
         self.kill_btn.setEnabled(bool(p.pid))
+
+    def _integrity_text(self) -> str:
+        info = self.info
+        if not info["package"]:
+            return f"<span style='color:{MUTED_COLOR}'>nothing to compare against (no package)</span>"
+        lines = []
+        if info["exe_matches"] is True:
+            lines.append(f"<span style='color:{OK_COLOR}'>✔ Program file matches the package</span>")
+        elif info["exe_matches"] is False:
+            lines.append(f"<span style='color:{SEVERITY_COLORS[HIGH]}'>✖ Program file differs from the package</span>")
+        verify = info.get("verify", "pending")
+        if verify == "pending":
+            lines.append(f"<span style='color:{MUTED_COLOR}'>Verifying all package files…</span>")
+        elif verify is None:
+            lines.append(f"<span style='color:{MUTED_COLOR}'>Full package check unavailable</span>")
+        elif verify["changed"]:
+            shown = "<br>".join(f"&nbsp;&nbsp;{breakable(path)} <span style='color:{MUTED_COLOR}'>({esc_(reason)})</span>"
+                                for path, reason in verify["changed"][:5])
+            more = f"<br>&nbsp;&nbsp;…and {len(verify['changed']) - 5} more" if len(verify["changed"]) > 5 else ""
+            total = f" of {verify['files']}" if verify["files"] else ""
+            lines.append(f"<span style='color:{SEVERITY_COLORS[HIGH]}'>✖ {len(verify['changed'])}{total} package files "
+                         f"changed since install:</span><br>{shown}{more}")
+        else:
+            total = f"All {verify['files']} package files match" if verify["files"] else "All package files match"
+            note = f" ({verify['unreadable']} need root to check)" if verify["unreadable"] else ""
+            lines.append(f"<span style='color:{OK_COLOR}'>✔ {total}{note}</span>")
+        return "<br>".join(lines)
 
     # --- actions ----------------------------------------------------------------
 
