@@ -66,10 +66,11 @@ def check_process(proc: Process) -> list[Alert]:
     return alerts
 
 
-def check_connection(conn: Connection, blocklist: dict[str, str]) -> list[Alert]:
+def check_connection(conn: Connection, blocklist: dict) -> list[Alert]:
     alerts = []
-    if conn.raddr and conn.raddr in blocklist:
-        alerts.append(Alert(HIGH, f"{conn.raddr} is on a threat-intel blocklist ({blocklist[conn.raddr]})"))
+    hit = blocklist.get(conn.raddr) if conn.raddr else None
+    if hit:
+        alerts.append(Alert(hit.severity, hit.describe(conn.rport)))
     if conn.scope == "internet" and conn.rport in SUSPICIOUS_PORTS:
         alerts.append(Alert(MEDIUM, f"Remote port {conn.rport}: {SUSPICIOUS_PORTS[conn.rport]}"))
     elif conn.scope == "listening" and conn.status == "LISTEN" and conn.lport in SUSPICIOUS_PORTS:
@@ -122,7 +123,7 @@ class BeaconTracker:
         return mean if statistics.pstdev(gaps) / mean <= self.max_jitter else None
 
 
-def analyze(procs: list[Process], blocklist: dict[str, str] | None = None,
+def analyze(procs: list[Process], blocklist: dict | None = None,
             tracker: BeaconTracker | None = None) -> list[Process]:
     """Attach alerts to every process and connection, then sort the worst to the top."""
     blocklist = blocklist or {}

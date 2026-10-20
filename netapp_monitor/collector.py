@@ -13,6 +13,10 @@ LOW, MEDIUM, HIGH = 1, 2, 3
 SEVERITY_NAMES = {0: "ok", LOW: "low", MEDIUM: "medium", HIGH: "high"}
 
 CGNAT = ipaddress.ip_network("100.64.0.0/10")  # Tailscale and carrier-grade NAT
+# The app has already closed these; the kernel is only finishing the TCP teardown, sometimes
+# for minutes after the process exited. (CLOSE_WAIT stays: the app still holds that socket.)
+CLOSED_STATES = {psutil.CONN_TIME_WAIT, psutil.CONN_FIN_WAIT1, psutil.CONN_FIN_WAIT2,
+                 psutil.CONN_CLOSING, psutil.CONN_LAST_ACK, psutil.CONN_CLOSE}
 
 
 @dataclass
@@ -147,7 +151,7 @@ def snapshot() -> list[Process]:
 
 
 def _add(procs, pid, c):
-    if c.status == psutil.CONN_TIME_WAIT:
+    if c.status in CLOSED_STATES:
         return
     proc = procs.get(pid)
     if proc is None:

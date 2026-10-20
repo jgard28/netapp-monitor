@@ -56,5 +56,5 @@ def run(args) -> int:
     flagged = sum(1 for p, _ in rows if p.severity)
     internet = sum(len(p.internet) for p in procs)
     print(paint(DIM, f"\n{len(rows)} apps shown, {internet} internet connections, "
-                     f"{flagged} flagged, {len(blocklist)} blocklisted IPs loaded"))
+                     f"{flagged} flagged; intel: {blocklist.summary()}"))
     return 0

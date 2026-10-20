@@ -14,7 +14,8 @@ It's a threat-hunting dashboard, not a firewall. It never blocks or prompts. It 
 
 | Severity | Check |
 |---|---|
-| high | Remote IP is on a threat-intel blocklist ([abuse.ch Feodo Tracker](https://feodotracker.abuse.ch/) botnet C2 list, [IPsum](https://github.com/stamparm/ipsum) level 3) |
+| high | Remote IP is a known C2 server on [abuse.ch ThreatFox](https://threatfox.abuse.ch/) (currently active C2 for Cobalt Strike, Remcos, VShell, …; the alert names the malware, port, first-seen date and confidence) or [Feodo Tracker](https://feodotracker.abuse.ch/), or is on your own blocklist |
+| medium | Remote IP has a bad reputation: listed on 3+ public blocklists ([IPsum](https://github.com/stamparm/ipsum); mostly scanners and brute-forcers) |
 | high | Shell or netcat-style tool (`bash`, `sh`, `nc`, `socat`, …) holding an internet connection: possible reverse shell |
 | high | Executable running from `/tmp`, `/var/tmp` or `/dev/shm` |
 | high | Process disguising itself as a kernel thread (`[kworker/0:1]` with a real binary behind it) |
@@ -79,12 +80,12 @@ scripts/demo-alerts.sh        # or: scripts/demo-alerts.sh 300
 
 ## Your own blocklist
 
-Put IPs (one per line, `#` for comments) in `~/.config/netapp-monitor/blocklist.txt`. The tray app picks up changes live.
+Put IPs in `~/.config/netapp-monitor/blocklist.txt`, one per line. Text after `#` is shown as the reason (`203.0.113.9  # from the phishing mail`). The tray app picks up changes live.
 
 ## Notes and limits
 
 - **Run as your normal user.** You'll see full details for your own processes. Sockets owned by root or other users still appear, under "owned by another user". To attribute those, run the CLI with `sudo`. Don't run the GUI as root.
-- Blocklists are cached in `~/.cache/netapp-monitor/` and refreshed every 12 hours.
+- Threat feeds are cached in `~/.cache/netapp-monitor/`. ThreatFox refreshes every 2 hours, the others every 12. The status bar shows how many IPs each source contributed.
 - Beacon detection samples every 3 seconds, so it can miss connections that open and close faster than that. A dedicated eBPF/auditd sensor would catch them; that's a possible future addition.
 - A flag isn't a verdict. Browsers, sync clients and update checkers can poll on a timer too. Use the lookup links to investigate.
 

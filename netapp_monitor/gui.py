@@ -27,6 +27,7 @@ from .notifier import Notifier
 
 APP_ID = "netapp-monitor"
 REFRESH_MS = 3000
+INTEL_REFRESH_MS = 30 * 60 * 1000  # each feed only re-downloads once its cache is stale
 POPUP_TIMEOUT_MS = {HIGH: 20000, MEDIUM: 12000}  # pop-ups close themselves after this
 POPUP_BATCH = 3  # more new alerts than this in one refresh become a single summary pop-up
 SEVERITY_COLORS = {0: "#3fb950", 1: "#d29922", 2: "#f0883e", 3: "#f85149"}
@@ -90,7 +91,7 @@ class Dashboard(QMainWindow):
         self.setWindowTitle("NetApp Monitor")
         self.resize(1200, 700)
         self.procs = []
-        self.blocklist: dict[str, str] = {}
+        self.blocklist = intel.Intel()
         self.blocked_pids: set[int] = set()
         self.blocked_apps: list[dict] = []
         self.tracker = BeaconTracker()
@@ -148,6 +149,8 @@ class Dashboard(QMainWindow):
 
         self.timer = QTimer(self, interval=REFRESH_MS, timeout=self.tick)
         self.timer.start()
+        self.intel_timer = QTimer(self, interval=INTEL_REFRESH_MS, timeout=self.load_intel)
+        self.intel_timer.start()
         self.user_list_mtime = intel.user_list_mtime()
         self.load_intel()
         self.tick()
@@ -234,7 +237,7 @@ class Dashboard(QMainWindow):
         flagged = sum(1 for p in self.procs if p.severity)
         internet = sum(len(p.internet) for p in self.procs)
         summary = (f"{len(self.procs)} apps · {internet} internet connections · {flagged} flagged · "
-                   f"{len(self.blocked_apps)} blocked · {len(self.blocklist):,} blocklisted IPs loaded")
+                   f"{len(self.blocked_apps)} blocked · intel: {self.blocklist.summary() or 'loading…'}")
         self.status.setText(summary)
         if self.tray:
             self.tray.setIcon(tray_icon(worst))
