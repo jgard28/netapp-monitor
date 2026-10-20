@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NetApp Monitor
+Comment=See which apps talk to the internet and spot C2 / malware connections
+Exec=netapp-monitor
+Icon=netapp-monitor
+Terminal=false
+Categories=Network;Monitor;Security;System;
+Keywords=network;connections;firewall;malware;c2;netstat;

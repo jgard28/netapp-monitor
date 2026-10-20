@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netapp-monitor"
+version = "0.1.0"
+description = "Tray dashboard of every app's network connections, with C2 / malware red flags"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["psutil>=5.9", "PySide6>=6.5"]
+
+[project.scripts]
+netapp-monitor = "netapp_monitor.__main__:main"
+
+[tool.setuptools]
+packages = ["netapp_monitor"]
