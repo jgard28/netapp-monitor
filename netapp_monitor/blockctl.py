@@ -178,20 +178,75 @@ def block(pids: list[int]) -> int:
     return 0
 
 
+def exe_of(pid: int) -> str:
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return ""
+
+
+def parent_of(pid: int) -> int:
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def restore_candidates(pid: int, state: dict, uid: int):
+    """Where to put a process back, best first.
+
+    Processes the app started while blocked have no recorded origin, so they follow their
+    nearest ancestor. The last resort is a leaf cgroup of our own: slices such as app.slice
+    have controllers enabled and refuse to hold processes directly.
+    """
+    info = state.get(str(pid))
+    if info and info.get("origin"):
+        yield CGROUP_ROOT + info["origin"]
+    parent = parent_of(pid)
+    while parent > 1:
+        info = state.get(str(parent))
+        if info and info.get("origin"):
+            yield CGROUP_ROOT + info["origin"]
+        try:
+            where = cgroup_of(parent)
+        except OSError:
+            where = ""
+        if where and where != f"/{CGROUP_NAME}":
+            yield CGROUP_ROOT + where
+            break
+        parent = parent_of(parent)
+    leaf = f"{CGROUP_ROOT}/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/netapp-restored"
+    os.makedirs(leaf, exist_ok=True)
+    yield leaf
+
+
 def unblock(pids: list[int] | None) -> int:
     uid = caller_uid()
     current = blocked_pids()
-    targets = current if pids is None else current & set(pids)
+    if pids is None:
+        targets = current
+    else:
+        # Unblocking an app covers every blocked process of it, including ones it started
+        # after the GUI last looked, and their children.
+        exes = {exe_of(p) for p in pids} - {""}
+        chosen = {p for p in current if p in pids or exe_of(p) in exes}
+        targets = set(with_descendants(chosen, children_map())) & current
     state = load_state()
-    restored = 0
-    for pid in targets:
-        info = state.get(str(pid), {})
-        if uid != 0 and info.get("uid", owner(pid)) != uid:
+    # Recorded processes first, so their children can follow them back.
+    ordered = sorted(targets, key=lambda p: (str(p) not in state, p))
+    restored, failed = 0, []
+    for pid in ordered:
+        try:
+            pid_uid = state.get(str(pid), {}).get("uid", owner(pid))
+        except OSError:
+            continue  # exited
+        if uid != 0 and pid_uid != uid:
             continue
-        fallback = f"{CGROUP_ROOT}/user.slice/user-{owner(pid)}.slice/user@{owner(pid)}.service/app.slice"
-        origin = info.get("origin")
-        if (origin and move(pid, CGROUP_ROOT + origin)) or move(pid, fallback):
+        if any(move(pid, cg) for cg in restore_candidates(pid, state, pid_uid)):
             restored += 1
+        elif os.path.exists(f"/proc/{pid}"):
+            failed.append(pid)
     remaining = blocked_pids()
     save_state({p: i for p, i in state.items() if int(p) in remaining})
     if not remaining:
@@ -201,6 +256,10 @@ def unblock(pids: list[int] | None) -> int:
         except OSError:
             pass
     print(f"unblocked {restored} process(es)")
+    if failed:
+        print(f"could not unblock pid(s) {', '.join(map(str, failed))}; they are still blocked",
+              file=sys.stderr)
+        return 1
     return 0
 
 

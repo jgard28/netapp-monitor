@@ -20,6 +20,16 @@ class BlockctlTest(unittest.TestCase):
     def test_cgroup_of_self(self):
         self.assertTrue(blockctl.cgroup_of(os.getpid()).startswith("/"))
 
+    def test_restore_prefers_recorded_origin(self):
+        state = {str(os.getpid()): {"origin": "/some/scope"}}
+        first = next(blockctl.restore_candidates(os.getpid(), state, os.getuid()))
+        self.assertEqual(first, blockctl.CGROUP_ROOT + "/some/scope")
+
+    def test_restore_unrecorded_follows_parent(self):
+        # A process the app spawned while blocked has no origin: it goes where its parent lives.
+        first = next(blockctl.restore_candidates(os.getpid(), {}, os.getuid()))
+        self.assertEqual(first, blockctl.CGROUP_ROOT + blockctl.cgroup_of(os.getppid()))
+
     def test_refuses_without_root(self):
         if os.geteuid() == 0:
             self.skipTest("running as root")
