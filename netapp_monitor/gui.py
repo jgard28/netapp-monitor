@@ -34,6 +34,7 @@ from .memory import Baseline, DeviceNames, Trust
 from .notifier import Notifier
 from .panel import DetailPanel
 from .settingspage import SettingsPage
+from .theme import ThemeFollower
 
 APP_ID = "netapp-monitor"
 REFRESH_MS = 3000
@@ -157,6 +158,7 @@ class Dashboard(QMainWindow):
         # Sends domain names to registries, so it's off until you turn it on.
         self.ages = DomainAges(enabled=self.settings.value("domain_age", False, type=bool))
         self.popups_enabled = self.settings.value("popups", True, type=bool)
+        self.theme = ThemeFollower(QApplication.instance(), self.settings.value("follow_theme", True, type=bool))
         self.first_seen: dict[tuple, float] = {}  # connection key -> when it was first seen
         self.settings_refreshed = 0.0
         self.devices = DeviceNames()
@@ -1013,6 +1015,10 @@ class Dashboard(QMainWindow):
         self.settings.setValue("domain_age", enabled)
         self.settings_refreshed = 0.0
         self.tick()
+
+    def set_follow_theme(self, enabled: bool):
+        self.settings.setValue("follow_theme", enabled)
+        self.theme.set_enabled(enabled)
 
     def set_popups(self, enabled: bool):
         self.popups_enabled = enabled

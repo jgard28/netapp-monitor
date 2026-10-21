@@ -212,6 +212,18 @@ class SettingsPage(QScrollArea):
         alerts.addWidget(self.popups)
         layout.addLayout(alerts)
 
+        appearance = section("Appearance")
+        self.follow_theme = SettingRow(
+            "Match the desktop theme",
+            "Use the colors of your Omarchy theme, and switch along when you change it. Alert colors "
+            "(red, orange, yellow, green) always stay the same, so a warning never looks harmless.",
+            dash.theme.enabled)
+        self.follow_theme.toggled.connect(dash.set_follow_theme)
+        if not dash.theme.available():
+            self.follow_theme.set_note("No Omarchy theme found, so the system's colors are used.", MUTED_COLOR)
+        appearance.addWidget(self.follow_theme)
+        layout.addLayout(appearance)
+
         privacy = section("Lookups that leave your computer",
                           "Off unless you turn them on. Each one says exactly what it sends.")
         self.domain_age = SettingRow(

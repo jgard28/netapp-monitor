@@ -13,6 +13,8 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 - **Block an app from the internet** with a right-click, either until it exits or **always** (every time the program starts, also after a reboot). A minimal **Blocked** page lists what's blocked, with one-click Unblock.
 - **Export report**: one click saves a standalone HTML page (or JSON) of current connections, alerts, program hashes and the last 24 hours of alerts, as evidence or to share with someone helping you investigate
 - **CLI / JSON** for a one-off check or scripting: `netapp-monitor --cli`
+- **Fits a tiled window:** on a narrow window (e.g. half a screen in Hyprland) the detail panel moves under the list and the status line shortens itself. Right-click any list header to choose its columns; widths and choices are remembered.
+- **Matches your Omarchy theme** and switches along when you run `omarchy theme set`. Alert colors never change with the theme. Turn it off under Settings → Appearance; on other desktops it uses the system's colors.
 
 ## What it flags
 
