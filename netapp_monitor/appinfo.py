@@ -225,5 +225,5 @@ class AppInfoLoader(QObject):
             return None
         if info["exe_matches"] is False:
             return Alert(HIGH, f"Program file differs from the copy {info['package']} installed "
-                               "(possibly tampered with or trojanized)", kind="never-mute")
+                               "(possibly tampered with or trojanized)", kind="never-mute", topic="tampered")
         return None

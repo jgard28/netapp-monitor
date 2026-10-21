@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import html
+import re
 import time
+from collections import Counter
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
@@ -11,7 +13,8 @@ from PySide6.QtWidgets import (
 )
 
 from .appinfo import parent_chain, started
-from .collector import HIGH, SEVERITY_COLORS, SEVERITY_NAMES
+from .collector import HIGH, SEVERITY_COLORS, SEVERITY_NAMES, human_bytes
+from .explain import explain
 
 OK_COLOR, WARN_COLOR, NEW_COLOR, MUTED_COLOR = "#3fb950", "#d29922", "#58a6ff", "#8b949e"
 
@@ -49,6 +52,8 @@ class DetailPanel(QFrame):
         self.dash = dashboard
         self.proc = None
         self.info: dict | None = None
+        self.opened: set[str] = set()  # alerts whose explanation is expanded
+        self.alert_keys: list[str] = []
         dashboard.loader.loaded.connect(self._loaded)
         self.setMinimumWidth(360)
         self.setFrameShape(QFrame.StyledPanel)
@@ -68,7 +73,8 @@ class DetailPanel(QFrame):
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignTop)
         for name in ("Path", "Command", "User", "PID", "Started", "Launched by", "Package", "Integrity",
-                     "SHA-256", "Online since", "Networks", "Right now", "Domains"):
+                     "SHA-256", "Online since", "Networks", "Right now", "Talking to", "Domains", "Traffic",
+                     "History"):
             self.fields[name] = self._label()
             form.addRow(f"<span style='color:{MUTED_COLOR}'>{name}</span>", self.fields[name])
 
@@ -83,8 +89,10 @@ class DetailPanel(QFrame):
         hash_row.addWidget(copy)
         hash_row.addStretch(1)
 
+        self.fields["History"].linkActivated.connect(lambda _: self.dash.show_history(self.proc.exe or self.proc.name))
         self.alerts_title = QLabel("<b>Alerts</b>")
         self.alerts = self._label()
+        self.alerts.linkActivated.connect(self._toggle_explanation)
 
         self.block_btn = QPushButton()
         self.trust_btn = QPushButton()
@@ -124,7 +132,7 @@ class DetailPanel(QFrame):
     def _label():
         label = QLabel()
         label.setWordWrap(True)
-        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
         label.setTextFormat(Qt.RichText)
         return label
 
@@ -155,7 +163,9 @@ class DetailPanel(QFrame):
             chips.append(chip(f"{SEVERITY_NAMES[p.severity]} risk", SEVERITY_COLORS[p.severity]))
         if p.new:
             chips.append(chip("new", NEW_COLOR))
-        if p.pid in d.blocked_pids:
+        if p.exe and p.exe in d.always:
+            chips.append(chip("always blocked", MUTED_COLOR))
+        elif p.pid in d.blocked_pids:
             chips.append(chip("blocked", MUTED_COLOR))
         if p.exe and p.exe in d.trust.apps:
             chips.append(chip("trusted", MUTED_COLOR))
@@ -214,18 +224,48 @@ class DetailPanel(QFrame):
         new = sum(1 for c in p.internet if c.new)
         f["Right now"].setText(f"{inet} internet connection{'s' if inet != 1 else ''}"
                                + (f", {new} to new networks" if new else ""))
+        owners = Counter(c.owner for c in p.internet if c.owner)
+        f["Talking to"].setText("<br>".join(
+            esc(f"{o.flag} {o.org}".strip()) + (f" ×{n}" if n > 1 else "")
+            + (f" <span style='color:{WARN_COLOR}'>rented server</span>" if o.hosting else "")
+            for o, n in owners.most_common(6)) or "—")
         domains = sorted({c.domain for c in p.internet if c.domain})
         f["Domains"].setText(breakable(", ".join(domains[:8]) + (f" +{len(domains) - 8} more" if len(domains) > 8 else ""))
                              if domains else f"<span style='color:{MUTED_COLOR}'>none seen (app may use its own DNS, "
                                              "e.g. DNS-over-HTTPS)</span>")
 
+        up, down = p.up, p.down
+        sent = sum(c.sent for c in p.internet)
+        received = sum(c.received for c in p.internet)
+        f["Traffic"].setText(f"↑ {human_bytes(up)}/s ↓ {human_bytes(down)}/s now<br>"
+                             f"<span style='color:{MUTED_COLOR}'>↑ {human_bytes(sent)} ↓ {human_bytes(received)} "
+                             "on open connections (TCP only)</span>" if p.internet else "—")
+        week = time.time() - 7 * 86400
+        dests, logged = d.history.app_summary(p.exe or p.name, week)
+        f["History"].setText(f"last 7 days: {dests} destination{'s' if dests != 1 else ''}, "
+                             f"{logged} alert{'s' if logged != 1 else ''} · <a href='history'>Show</a>")
+
         lines = []
+        self.alert_keys = []
         for a in p.all_alerts():
             color = MUTED_COLOR if a.muted else SEVERITY_COLORS[a.severity]
-            lines.append(f"<span style='color:{color}'>● {'(muted) ' if a.muted else ''}{esc(a.message)}</span>")
+            why = explain(a.topic)
+            # Numbers drift (the beacon interval), so they don't count towards which alert this is.
+            key = a.topic + re.sub(r"\d+", "", a.message)
+            link = ""
+            if why:
+                self.alert_keys.append(key)
+                label = "Hide" if key in self.opened else "What does this mean?"
+                link = f" <a href='{len(self.alert_keys) - 1}'>{label}</a>"
+            lines.append(f"<span style='color:{color}'>● {'(muted) ' if a.muted else ''}{esc(a.message)}</span>{link}")
+            if why and key in self.opened:
+                lines.append(
+                    f"<div style='margin-left:14px'><b>What it means.</b> {esc(why.meaning)}<br>"
+                    f"<b>Often harmless when:</b> {esc(why.harmless)}<br>"
+                    f"<b>What to check:</b> {esc(why.check)}</div>")
         self.alerts.setText("<br>".join(lines) or f"<span style='color:{MUTED_COLOR}'>None</span>")
 
-        blocked = p.pid in d.blocked_pids
+        blocked = p.pid in d.blocked_pids or (bool(p.exe) and p.exe in d.always)
         self.block_btn.setText("Unblock" if blocked else "Block internet…")
         self.block_btn.setEnabled(bool(p.pid))
         trusted = bool(p.exe) and p.exe in d.trust.apps
@@ -260,10 +300,14 @@ class DetailPanel(QFrame):
             lines.append(f"<span style='color:{OK_COLOR}'>✔ {total}{note}</span>")
         return "<br>".join(lines)
 
+    def _toggle_explanation(self, index):
+        self.opened ^= {self.alert_keys[int(index)]}
+        self._render()
+
     # --- actions ----------------------------------------------------------------
 
     def _block(self):
-        if self.proc.pid in self.dash.blocked_pids:
+        if self.proc.pid in self.dash.blocked_pids or self.proc.exe in self.dash.always:
             self.dash.unblock_app(self.proc)
         else:
             self.dash.block_app(self.proc)

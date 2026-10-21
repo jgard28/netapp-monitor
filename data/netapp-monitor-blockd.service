@@ -1,0 +1,16 @@
+[Unit]
+Description=NetApp Monitor: keep "always blocked" programs off the internet
+Documentation=https://github.com/jgard28/netapp-monitor
+After=nftables.service
+
+[Service]
+ExecStart=/usr/local/libexec/netapp-monitor/netapp-blockctl daemon
+Restart=on-failure
+RestartSec=2
+Nice=-5
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

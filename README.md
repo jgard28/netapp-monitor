@@ -2,12 +2,14 @@
 
 A small Linux tray app that shows **every application's network connections**, grouped by process, and flags the ones that look like malware or command-and-control (C2) traffic.
 
-It's a threat-hunting dashboard, not a firewall. It never blocks or prompts. It watches, scores and tells you what's worth a closer look.
+It's a threat-hunting dashboard, not a firewall. It never blocks anything on its own or nags you with prompts. It watches, scores and tells you what's worth a closer look.
 
 - **Tray icon** that changes color with the worst finding: green (clean), yellow (low), orange (medium), red (high)
-- **Dashboard** (click the icon, or run `netapp-monitor` again): processes sorted worst-first, each expandable into its connections, with reverse DNS
+- **Dashboard** (click the icon, or run `netapp-monitor` again): processes sorted worst-first, each expandable into its connections, with reverse DNS, live upload/download rate, and who owns each remote IP (country flag and network, e.g. "🇩🇪 DE · Hetzner (rented server)")
+- **"What does this mean?"** next to every alert: what it means, when it's usually harmless, and what to check
+- **History**: a local 30-day timeline of every internet connection and alert, searchable by app, IP, domain or network
 - **Pop-up alerts** for new high and medium findings. They close themselves (20s high, 12s medium), can be dismissed by hand, and open the dashboard on that app when clicked. Bursts are grouped into one summary. Mute them from the tray menu.
-- **Block an app from the internet** with a right-click. A minimal **Blocked** page lists what's blocked, with one-click Unblock.
+- **Block an app from the internet** with a right-click, either until it exits or **always** (every time the program starts, also after a reboot). A minimal **Blocked** page lists what's blocked, with one-click Unblock.
 - **CLI / JSON** for a one-off check or scripting: `netapp-monitor --cli`
 
 ## What it flags
@@ -28,6 +30,9 @@ It's a threat-hunting dashboard, not a firewall. It never blocks or prompts. It 
 | low | Executable running from an unusual hidden directory |
 | low | Random-looking domain (possible domain-generation malware) |
 | low | App does its own DNS straight to the internet, bypassing the system resolver |
+| low | App uploaded 200 MB or more to the internet in the last 10 minutes (possible data theft; also backups, sync, video calls) |
+
+Every alert has a **What does this mean?** link in the detail panel (and a one-line summary in its tooltip and pop-up) explaining what it means, when it's harmless and what to check.
 
 Click an app to open its **detail panel**. It shows:
 
@@ -37,7 +42,22 @@ Click an app to open its **detail panel**. It shows:
 - **Integrity:** whether the program file, and every other file in its package, still matches what the package installed (`pacman -Qkk` / `dpkg --verify`). On Linux this is stronger evidence than VirusTotal, which usually hasn't seen distro-built binaries.
 - **Its SHA-256** with a VirusTotal button (most useful for programs that didn't come from a package).
 - **What the baseline knows:** online since when, and how many networks it has contacted.
-- **Its alerts,** plus Block / Trust / Kill buttons.
+- **Who it's talking to:** the networks behind its connections, with country flags; rented servers (VPS / hosting providers) are marked, since that's where most malware infrastructure lives.
+- **Traffic:** current upload/download rate and bytes on open connections.
+- **History:** destinations and alerts in the last 7 days, with a link to the History page.
+- **Its alerts,** each with an explanation, plus Block / Trust / Kill buttons.
+
+### Network owner and country
+
+Each remote IP is matched against [iptoasn.com](https://iptoasn.com/)'s public-domain IP-to-network table (about 9 MB, downloaded to `~/.cache/netapp-monitor/` and refreshed weekly). Lookups are local, so the IPs you connect to are never sent anywhere. Rented-server providers (Hetzner, OVH, DigitalOcean, Vultr, Contabo, M247, …, plus networks with "hosting" or "server" in their name) are marked "(rented server)". That's informational, not an alert: plenty of honest sites run there, but so do most C2 servers.
+
+### Traffic
+
+Rates come from the kernel's per-socket TCP counters (`ss -ti`), sampled every refresh. UDP has no per-socket counters, so QUIC/HTTP3 and other UDP traffic isn't counted.
+
+### History
+
+Every internet connection is recorded when it opens (app, destination, domain, network, bytes, alerts) and every alert when it first appears, in `~/.local/state/netapp-monitor/history.db` (SQLite, kept 30 days, never leaves your computer). The **History** page lists destinations grouped by app, or an alert log, for the last hour, day, week or month.
 
 Right-click a connection to look the IP up on AbuseIPDB, VirusTotal or Shodan. Right-click an app to copy its path or command line, look up its SHA-256 on VirusTotal (only the hash leaves your machine; the file is never uploaded), or kill it.
 
@@ -77,7 +97,7 @@ netapp-monitor --json --alerts         # flagged apps only, as JSON
 - **Trust:** right-click an app and choose **Trust this app**, or right-click a connection and choose **Trust this destination**, to mute alerts you know are fine. Muted alerts stay in the list, greyed out and marked "(muted)", but they don't color the tray, pop up or push the app to the top. The **Trusted** page lists everything you trust, with a **Remove** button. Two things are never muted: a connection to a known C2 server from threat intel, and a process disguised as a kernel thread. A trusted app doing either is what a hijacked app looks like.
 - **New:** NetApp Monitor learns which apps reach the internet and which networks they talk to (grouped by /24 for IPv4, /48 for IPv6, so CDNs don't look new every minute). An app going online for the first time, or a known app reaching a network it has never contacted, is shown in blue for 24 hours. Tick **New only** to see just those. The first 30 minutes are a learning period (shown in the status bar), so the first run doesn't flag your whole system.
 
-State lives in `~/.local/state/netapp-monitor/` (`trust.json`, `baseline.json`). Delete `baseline.json` to start learning again.
+State lives in `~/.local/state/netapp-monitor/` (`trust.json`, `baseline.json`, `history.db`). Delete `baseline.json` to start learning again.
 
 ## System setup (optional, one time)
 
@@ -91,7 +111,9 @@ sudo ./install-system.sh     # or ~/.local/share/netapp-monitor/install-system.s
 
 Right-click an app on the **Connections** page and choose **Block internet access**. Every running process of that app is moved into its own cgroup (`/sys/fs/cgroup/netapp-blocked`). An nftables rule (`table inet netapp_monitor`) rejects all of their outgoing traffic except loopback, and their open connections are closed. Anything the app launches afterwards is blocked too. The **Blocked** page shows each blocked app with an **Unblock** button.
 
-Blocks are temporary: they last until you unblock the app, it exits, or you reboot. You'll be asked for your password through polkit (cached for a few minutes). Only your own processes can be blocked.
+By default a block lasts until you unblock the app, it exits, or you reboot. Tick **Always block this program** in the confirmation to make it permanent: the program's path is saved in `/etc/netapp-monitor/always-block.json`, and a small root service (`netapp-monitor-blockd`) watches every program start through the kernel's process-event connector and blocks matching programs the moment they start, also after a reboot. Always-blocked programs stay on the Blocked page even when they aren't running. Unblock removes them. (Blocking a shell or interpreter such as `python3` this way would block every script it runs; the dialog warns you.)
+
+You'll be asked for your password through polkit (cached for a few minutes). Only your own processes can be blocked.
 
 ### Domain matching
 

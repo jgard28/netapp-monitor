@@ -3,6 +3,7 @@
 #
 #   * Blocking apps from the internet: a small helper plus a polkit action. The dashboard
 #     asks for your password (cached for a few minutes) whenever you block or unblock.
+#     A small service keeps "always blocked" programs blocked whenever they start.
 #   * Domain matching: a polkit rule that lets you (only you, in an active local session)
 #     subscribe to systemd-resolved's DNS lookups, so connections can be matched to the
 #     domains apps looked up. No password prompt for this one.
@@ -15,12 +16,16 @@ set -euo pipefail
 src="$(cd "$(dirname "$0")" && pwd)"
 helper=/usr/local/libexec/netapp-monitor/netapp-blockctl
 policy=/usr/share/polkit-1/actions/io.github.jgard28.netapp-monitor.policy
+service=/etc/systemd/system/netapp-monitor-blockd.service
 rule=/etc/polkit-1/rules.d/50-netapp-monitor.rules
 user="${SUDO_USER:-}"
 
 if [ "${1:-}" = "--remove" ]; then
+  systemctl disable --now netapp-monitor-blockd.service 2>/dev/null || true
   [ -x "$helper" ] && "$helper" unblock --all || true
-  rm -f "$helper" "$policy" "$rule"
+  rm -f "$helper" "$policy" "$rule" "$service" /etc/netapp-monitor/always-block.json
+  rmdir /etc/netapp-monitor 2>/dev/null || true
+  systemctl daemon-reload
   rmdir /usr/local/libexec/netapp-monitor 2>/dev/null || true
   echo "NetApp Monitor system support removed."
   exit 0
@@ -32,7 +37,12 @@ fi
 if command -v nft >/dev/null; then
   install -D -o root -g root -m 755 "$src/netapp_monitor/blockctl.py" "$helper"
   install -D -o root -g root -m 644 "$src/data/io.github.jgard28.netapp-monitor.policy" "$policy"
+  install -D -o root -g root -m 644 "$src/data/netapp-monitor-blockd.service" "$service"
+  systemctl daemon-reload
+  systemctl enable --quiet netapp-monitor-blockd.service
+  systemctl restart netapp-monitor-blockd.service
   echo "✔ Blocking support installed (right-click an app → Block internet access)."
+  echo "✔ Always-block service running (netapp-monitor-blockd)."
 else
   echo "✖ Skipped blocking: nftables is not installed (pacman -S nftables)." >&2
 fi

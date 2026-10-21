@@ -9,6 +9,7 @@ from dataclasses import asdict
 from . import intel
 from .collector import SEVERITY_NAMES, severity_of, reverse_dns, snapshot, visible_connections
 from .detect import analyze
+from .geo import GeoDB
 from .memory import Trust
 
 COLORS = {0: "", 1: "\033[33m", 2: "\033[38;5;208m", 3: "\033[31;1m"}
@@ -17,7 +18,8 @@ DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
 
 def run(args) -> int:
     blocklist = intel.load(update=not args.offline)
-    procs = analyze(snapshot(), blocklist, trust=Trust())
+    geo = GeoDB(update=not args.offline, background=False)
+    procs = analyze(snapshot(), blocklist, trust=Trust(), geo=geo)
     rows = [(p, visible_connections(p, args.all)) for p in procs]
     rows = [(p, conns) for p, conns in rows if conns or p.alerts]
     if args.alerts:
@@ -33,7 +35,8 @@ def run(args) -> int:
         out = []
         for p, conns in rows:
             d = asdict(p)
-            d["connections"] = [asdict(c) | {"host": hosts.get(c.raddr, "")} for c in conns]
+            d["connections"] = [asdict(c) | {"host": hosts.get(c.raddr, ""),
+                                             "owner": asdict(c.owner) if c.owner else None} for c in conns]
             d["severity"] = SEVERITY_NAMES[p.severity]
             out.append(d)
         json.dump(out, sys.stdout, indent=2)
@@ -50,7 +53,8 @@ def run(args) -> int:
             print("    " + paint(DIM if a.muted else COLORS[a.severity], f"! {'(muted) ' if a.muted else ''}{a.message}"))
         for c in conns:
             host = hosts.get(c.raddr, "")
-            line = f"    {c.proto:<3}  {c.local:<22} -> {c.remote or '*':<22} {c.status:<11} {c.scope:<9} {host}"
+            owner = c.owner.label() if c.owner else ""
+            line = f"    {c.proto:<3}  {c.local:<22} -> {c.remote or '*':<22} {c.status:<11} {c.scope:<9} {owner:<34} {host}"
             print(paint(COLORS[severity_of(c.alerts)], line.rstrip()))
             for a in c.alerts:
                 print("        " + paint(DIM if a.muted else COLORS[a.severity], f"! {'(muted) ' if a.muted else ''}{a.message}"))

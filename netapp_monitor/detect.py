@@ -7,7 +7,7 @@ import statistics
 import time
 from collections import defaultdict
 
-from .collector import HIGH, LOW, MEDIUM, Alert, Connection, Process
+from .collector import HIGH, LOW, MEDIUM, Alert, Connection, Process, human_bytes
 from .dns import looks_generated
 
 SUSPICIOUS_PORTS = {
@@ -38,6 +38,10 @@ TEMP_DIRS = ("/tmp/", "/var/tmp/", "/dev/shm/")
 RESOLVERS = {"systemd-resolve", "systemd-resolved", "dnsmasq", "unbound", "named", "dnscrypt-proxy",
              "stubby", "tailscaled", "NetworkManager", "pihole-FTL", "coredns", "kresd"}
 
+# Sending this much to the internet within UPLOAD_WINDOW seconds raises a (low) upload alert.
+UPLOAD_LIMIT = 200 * 1000 * 1000
+UPLOAD_WINDOW = 600
+
 HOME = os.path.expanduser("~")
 # Hidden directories that commonly hold legitimate binaries.
 HIDDEN_OK = tuple(f"{HOME}/{d}/" for d in (
@@ -54,23 +58,26 @@ def check_process(proc: Process) -> list[Alert]:
 
     if proc.exe_deleted:
         alerts.append(Alert(MEDIUM, "Executable was deleted or replaced on disk while running "
-                                    "(a malware trick, but also normal after an update until the app restarts)"))
+                                    "(a malware trick, but also normal after an update until the app restarts)", topic="deleted"))
     if exe.startswith(TEMP_DIRS):
-        alerts.append(Alert(HIGH, f"Runs from a temp directory: {exe}"))
+        alerts.append(Alert(HIGH, f"Runs from a temp directory: {exe}", topic="temp"))
     elif "/." in exe and not exe.startswith(HIDDEN_OK) and "/.venv/" not in exe:
-        alerts.append(Alert(LOW, f"Runs from a hidden directory: {exe}"))
+        alerts.append(Alert(LOW, f"Runs from a hidden directory: {exe}", topic="hidden"))
     if proc.cmdline.startswith("[") and exe:
-        alerts.append(Alert(HIGH, f"Disguised as a kernel thread: '{proc.cmdline}' is really {exe}", kind="never-mute"))
+        alerts.append(Alert(HIGH, f"Disguised as a kernel thread: '{proc.cmdline}' is really {exe}", kind="never-mute",
+                            topic="kthread"))
 
     if proc.internet:
         if base in SHELLS or proc.name in SHELLS:
-            alerts.append(Alert(HIGH, f"{base} has an internet connection (possible reverse shell)"))
+            alerts.append(Alert(HIGH, f"{base} has an internet connection (possible reverse shell)", topic="shell"))
         elif INTERPRETER.match(base):
-            alerts.append(Alert(LOW, f"Script interpreter talking to the internet: {proc.cmdline[:200]}"))
+            alerts.append(Alert(LOW, f"Script interpreter talking to the internet: {proc.cmdline[:200]}",
+                                topic="interpreter"))
         if proc.name not in RESOLVERS and base not in RESOLVERS:
             direct = sorted({c.raddr for c in proc.internet if c.rport in (53, 853)})
             if direct:
-                alerts.append(Alert(LOW, f"Does its own DNS, bypassing the system resolver ({', '.join(direct[:3])})"))
+                alerts.append(Alert(LOW, f"Does its own DNS, bypassing the system resolver ({', '.join(direct[:3])})",
+                                    topic="dns-bypass"))
     return alerts
 
 
@@ -78,16 +85,18 @@ def check_connection(conn: Connection, blocklist: dict) -> list[Alert]:
     alerts = []
     hit = blocklist.get(conn.raddr) if conn.raddr else None
     if hit:
-        alerts.append(Alert(hit.severity, hit.describe(conn.rport), kind="intel"))
+        alerts.append(Alert(hit.severity, hit.describe(conn.rport), kind="intel", topic="intel"))
     domain_hit = blocklist.domain_hit(conn.domain) if conn.domain and hasattr(blocklist, "domain_hit") else None
     if domain_hit and domain_hit is not hit:
-        alerts.append(Alert(domain_hit.severity, f"{conn.domain}: {domain_hit.describe()}", kind="intel"))
+        alerts.append(Alert(domain_hit.severity, f"{conn.domain}: {domain_hit.describe()}", kind="intel",
+                            topic="intel-domain"))
     if conn.domain and conn.scope == "internet" and looks_generated(conn.domain):
-        alerts.append(Alert(LOW, f"{conn.domain} looks randomly generated (a trait of malware domain generators)"))
+        alerts.append(Alert(LOW, f"{conn.domain} looks randomly generated (a trait of malware domain generators)",
+                            topic="dga"))
     if conn.scope == "internet" and conn.rport in SUSPICIOUS_PORTS:
-        alerts.append(Alert(MEDIUM, f"Remote port {conn.rport}: {SUSPICIOUS_PORTS[conn.rport]}"))
+        alerts.append(Alert(MEDIUM, f"Remote port {conn.rport}: {SUSPICIOUS_PORTS[conn.rport]}", topic="port"))
     elif conn.scope == "listening" and conn.status == "LISTEN" and conn.lport in SUSPICIOUS_PORTS:
-        alerts.append(Alert(MEDIUM, f"Listening on port {conn.lport}: {SUSPICIOUS_PORTS[conn.lport]}"))
+        alerts.append(Alert(MEDIUM, f"Listening on port {conn.lport}: {SUSPICIOUS_PORTS[conn.lport]}", topic="listen"))
     return alerts
 
 
@@ -152,7 +161,8 @@ def unattributed_lookups(dns, blocklist, procs, window: float = 600) -> list[Pro
         seen.add(domain)
         hit = blocklist.domain_hit(domain)
         if hit:
-            alerts.append(Alert(hit.severity, f"Something looked up {domain}: {hit.describe()}", kind="intel"))
+            alerts.append(Alert(hit.severity, f"Something looked up {domain}: {hit.describe()}", kind="intel",
+                                topic="lookup"))
     if not alerts:
         return []
     return [Process(pid=None, name="DNS lookup (app unknown)", alerts=alerts)]
@@ -160,27 +170,35 @@ def unattributed_lookups(dns, blocklist, procs, window: float = 600) -> list[Pro
 
 def analyze(procs: list[Process], blocklist: dict | None = None,
             tracker: BeaconTracker | None = None, trust=None, baseline=None, integrity=None,
-            dns=None) -> list[Process]:
+            dns=None, geo=None, traffic=None) -> list[Process]:
     """Attach alerts and "new" tags to every process and connection, then sort the worst first."""
     blocklist = {} if blocklist is None else blocklist  # an Intel with only domains is falsy
-    if dns:
-        for p in procs:
-            for c in p.connections:
+    for p in procs:
+        for c in p.connections:
+            if dns:
                 c.domain = dns.name_for(c.raddr)
+            if geo:
+                c.owner = geo.lookup(c.raddr) if c.scope == "internet" else None
     if tracker:
         tracker.observe(procs)
+    if traffic:
+        traffic.observe(procs)
     for p in procs:
         p.alerts = check_process(p)
         if integrity and p.internet:
             tampered = integrity.alert_for(p)
             if tampered:
                 p.alerts.append(tampered)
+        sent = traffic.uploaded(p.exe or p.name, UPLOAD_WINDOW) if traffic else 0
+        if sent >= UPLOAD_LIMIT:
+            p.alerts.append(Alert(LOW, f"Uploaded {human_bytes(sent)} in the last {UPLOAD_WINDOW // 60} min",
+                                  topic="upload"))
         for c in p.connections:
             c.alerts = check_connection(c, blocklist)
             if tracker and c.scope == "internet":
                 every = tracker.interval(p.exe or p.name, c.raddr, c.rport)
                 if every:
-                    c.alerts.append(Alert(MEDIUM, f"Beaconing: reconnects every ~{every:.0f}s"))
+                    c.alerts.append(Alert(MEDIUM, f"Beaconing: reconnects every ~{every:.0f}s", topic="beacon"))
     if dns:
         procs.extend(unattributed_lookups(dns, blocklist, procs))
     if trust:

@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import socket
+import subprocess
+import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -26,6 +30,7 @@ class Alert:
     message: str
     kind: str = ""  # "intel" for threat-intel hits, "never-mute" for signs trust can't explain away
     muted: bool = False  # the user trusts this app or destination
+    topic: str = ""  # which explanation in explain.py applies
 
 
 @dataclass
@@ -41,6 +46,11 @@ class Connection:
     alerts: list[Alert] = field(default_factory=list)
     new: bool = False  # first contact with this destination network
     domain: str = ""  # the name the app looked up to get this IP, if DNS was watched
+    owner: object = None  # geo.Owner of the remote address, once the database is loaded
+    sent: int = 0  # bytes so far (TCP only; the kernel keeps no per-socket count for UDP)
+    received: int = 0
+    up: float = 0.0  # bytes per second since the last snapshot
+    down: float = 0.0
 
     @property
     def key(self):
@@ -81,6 +91,14 @@ class Process:
     @property
     def has_new(self):
         return self.new or any(c.new for c in self.connections)
+
+    @property
+    def up(self):
+        return sum(c.up for c in self.connections)
+
+    @property
+    def down(self):
+        return sum(c.down for c in self.connections)
 
 
 def severity_of(alerts) -> int:
@@ -181,6 +199,98 @@ def _add(procs, pid, c):
         status="" if c.status == psutil.CONN_NONE else c.status,
         scope=classify_ip(raddr) if raddr else "listening",
     ))
+
+
+def tcp_counters() -> dict[tuple, tuple[int, int]]:
+    """(laddr, lport, raddr, rport) -> (bytes sent and acknowledged, bytes received), from ss."""
+    try:
+        out = subprocess.run(["ss", "-tinHO"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    counters = {}
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        local, peer = _split_endpoint(fields[3]), _split_endpoint(fields[4])
+        sent = re.search(r"\bbytes_acked:(\d+)", line)
+        received = re.search(r"\bbytes_received:(\d+)", line)
+        if local and peer and (sent or received):
+            counters[local + peer] = (int(sent.group(1)) if sent else 0, int(received.group(1)) if received else 0)
+    return counters
+
+
+def _split_endpoint(text: str):
+    host, _, port = text.rpartition(":")
+    if not port.isdigit():
+        return None
+    return normalize_ip(host.strip("[]")), int(port)
+
+
+class Traffic:
+    """Turns the kernel's running byte counts into per-connection rates.
+
+    Connections already open when monitoring starts begin at their current count, so their
+    history isn't mistaken for a burst. `uploaded(app, window)` sums what an app sent recently.
+    """
+
+    def __init__(self):
+        self.last: dict[tuple, tuple[int, int]] = {}
+        self.last_time: float | None = None
+        self.sent_log: dict[str, deque] = {}  # app -> (time, bytes) uploads, for the big-upload check
+
+    def observe(self, procs: list[Process], now: float | None = None, counters=None):
+        now = time.time() if now is None else now
+        counters = tcp_counters() if counters is None else counters
+        first = self.last_time is None
+        elapsed = max(now - (self.last_time or now), 1e-6)
+        current = {}
+        for p in procs:
+            app = p.exe or p.name
+            for c in p.connections:
+                if c.proto != "tcp" or not c.raddr:
+                    continue
+                key = (c.laddr, c.lport, c.raddr, c.rport)
+                if key not in counters:
+                    continue
+                c.sent, c.received = counters[key]
+                current[key] = (c.sent, c.received)
+                if key in self.last:
+                    before = self.last[key]
+                elif first:
+                    continue
+                else:
+                    before = (0, 0)  # opened since the last look: everything it moved is recent
+                delta_up = max(0, c.sent - before[0])
+                c.up = delta_up / elapsed
+                c.down = max(0, c.received - before[1]) / elapsed
+                if delta_up and c.scope == "internet":
+                    self.sent_log.setdefault(app, deque()).append((now, delta_up))
+        self.last, self.last_time = current, now
+
+    def uploaded(self, app: str, window: float = 600, now: float | None = None) -> int:
+        now = time.time() if now is None else now
+        log = self.sent_log.get(app)
+        if not log:
+            return 0
+        while log and log[0][0] < now - window:
+            log.popleft()
+        return sum(n for _, n in log)
+
+
+def human_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1000 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" or n >= 100 else f"{n:.1f} {unit}"
+        n /= 1000
+    return f"{n:.1f} TB"
+
+
+def rate_text(up: float, down: float) -> str:
+    """'↑ 1.2 KB/s ↓ 40 KB/s', or '' when idle."""
+    if up < 1 and down < 1:
+        return ""
+    return f"↑ {human_bytes(up)}/s  ↓ {human_bytes(down)}/s"
 
 
 def reverse_dns(ip: str) -> str:
