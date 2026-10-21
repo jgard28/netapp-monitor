@@ -6,6 +6,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 
 - **Tray icon** that changes color with the worst finding: green (clean), yellow (low), orange (medium), red (high)
 - **Dashboard** (click the icon, or run `netapp-monitor` again): processes sorted worst-first, each expandable into its connections, with reverse DNS, live upload/download rate, and who owns each remote IP (country flag and network, e.g. "🇩🇪 DE · Hetzner (rented server)")
+- **Three views:** **Internet** (the default, for spotting C2), **Local network** (what's talking to your media server, NAS, Proxmox box or printer, with names you can give each device) and **Everything** (also loopback, listening ports and broadcast traffic)
 - **"What does this mean?"** next to every alert: what it means, when it's usually harmless, and what to check
 - **History**: a local 30-day timeline of every internet connection and alert, searchable by app, IP, domain or network
 - **Pop-up alerts** for new high and medium findings. They close themselves (20s high, 12s medium), can be dismissed by hand, and open the dashboard on that app when clicked. Bursts are grouped into one summary. Mute them from the tray menu.
@@ -25,6 +26,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 | high | Process disguising itself as a kernel thread (`[kworker/0:1]` with a real binary behind it) |
 | medium | **Beaconing**: an app opens fresh connections to the same host at a steady interval (low jitter), the classic C2 check-in pattern |
 | medium | Remote or listening port associated with backdoors, Metasploit, Cobalt Strike, IRC botnets, Tor or mining pools |
+| medium | **Local network scan**: an app contacts 12+ devices on your network, or 20+ ports on one device, within 2 minutes (how attackers and worms look for the next machine) |
 | medium | Executable deleted or replaced on disk while running (also normal right after a package update, until the app restarts) |
 | low | Script interpreter (`python`, `perl`, `node`, …) talking to the internet |
 | low | Executable running from an unusual hidden directory |
@@ -46,6 +48,12 @@ Click an app to open its **detail panel**. It shows:
 - **Traffic:** current upload/download rate and bytes on open connections.
 - **History:** destinations and alerts in the last 7 days, with a link to the History page.
 - **Its alerts,** each with an explanation, plus Block / Trust / Kill buttons.
+
+### Local network
+
+Switch to **Local network** at the top of the Connections page to see connections to other devices on your network, e.g. Firefox streaming from `192.168.7.239:8096`. The Network column reads "🏠 Local network" (or "🔒 Tailscale / CGNAT"), and the Host column shows the device's name from your router's DNS when it has one. Right-click a connection and choose **Name this device…** to call it "Media server": names are remembered by MAC address, so they survive a new IP from DHCP (`~/.local/state/netapp-monitor/devices.json`). Multicast and broadcast discovery traffic (mDNS, SSDP) only appears under **Everything**. Local connections are recorded in History too; filter it with **Local network** to answer "what touched my server yesterday?".
+
+From the terminal: `netapp-monitor --cli --lan`.
 
 ### Network owner and country
 
@@ -88,6 +96,7 @@ Any desktop with a StatusNotifierItem tray works: Waybar, the Omarchy bar, KDE, 
 netapp-monitor              # tray + dashboard (re-running it just raises the window)
 netapp-monitor --tray       # start minimized to the tray
 netapp-monitor --cli        # one-off grouped report in the terminal
+netapp-monitor --cli --lan             # connections to devices on your local network
 netapp-monitor --cli --all --resolve   # include LAN/loopback/listening, reverse-DNS remote IPs
 netapp-monitor --json --alerts         # flagged apps only, as JSON
 ```

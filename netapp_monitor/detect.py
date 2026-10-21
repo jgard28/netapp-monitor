@@ -145,6 +145,53 @@ class BeaconTracker:
         return mean if statistics.pstdev(gaps) / mean <= self.max_jitter else None
 
 
+class LanScanTracker:
+    """Spots an app reaching out to many local devices, or many ports on one, in a short time.
+
+    That's what network scanning and worm-like spreading look like. Streaming from a media
+    server or browsing a NAS touches one or two devices on a couple of ports, so it never trips.
+    Connection attempts to closed ports fail in milliseconds and can slip between samples, so
+    this catches slow or wide scans best (dead addresses hang for seconds and are seen).
+    """
+
+    def __init__(self, window=120, max_hosts=12, max_ports=20):
+        self.window = window
+        self.max_hosts = max_hosts
+        self.max_ports = max_ports
+        self.events: dict[str, list[tuple[float, str, int]]] = defaultdict(list)
+        self.seen: set[tuple] = set()
+
+    def observe(self, procs: list[Process], now: float | None = None):
+        now = time.time() if now is None else now
+        current = set()
+        for p in procs:
+            for c in p.local:
+                current.add(c.key)
+                if c.key not in self.seen:
+                    self.events[p.exe or p.name].append((now, c.raddr, c.rport))
+        self.seen = current
+        cutoff = now - self.window
+        for app in list(self.events):
+            self.events[app] = [e for e in self.events[app] if e[0] >= cutoff]
+            if not self.events[app]:
+                del self.events[app]
+
+    def check(self, app: str) -> Alert | None:
+        events = self.events.get(app, [])
+        hosts = {ip for _, ip, _ in events}
+        if len(hosts) >= self.max_hosts:
+            return Alert(MEDIUM, f"Contacted {len(hosts)} devices on your network within "
+                                 f"{self.window // 60} min (possible network scan)", topic="lan-scan")
+        ports: dict[str, set[int]] = defaultdict(set)
+        for _, ip, port in events:
+            ports[ip].add(port)
+        ip, used = max(ports.items(), key=lambda kv: len(kv[1]), default=(None, set()))
+        if len(used) >= self.max_ports:
+            return Alert(MEDIUM, f"Tried {len(used)} ports on {ip} within {self.window // 60} min "
+                                 "(possible port scan)", topic="lan-scan")
+        return None
+
+
 def unattributed_lookups(dns, blocklist, procs, window: float = 600) -> list[Process]:
     """Known-bad domains looked up recently that no current connection explains.
 
@@ -170,7 +217,7 @@ def unattributed_lookups(dns, blocklist, procs, window: float = 600) -> list[Pro
 
 def analyze(procs: list[Process], blocklist: dict | None = None,
             tracker: BeaconTracker | None = None, trust=None, baseline=None, integrity=None,
-            dns=None, geo=None, traffic=None) -> list[Process]:
+            dns=None, geo=None, traffic=None, lan_scan: LanScanTracker | None = None) -> list[Process]:
     """Attach alerts and "new" tags to every process and connection, then sort the worst first."""
     blocklist = {} if blocklist is None else blocklist  # an Intel with only domains is falsy
     for p in procs:
@@ -183,12 +230,17 @@ def analyze(procs: list[Process], blocklist: dict | None = None,
         tracker.observe(procs)
     if traffic:
         traffic.observe(procs)
+    if lan_scan:
+        lan_scan.observe(procs)
     for p in procs:
         p.alerts = check_process(p)
         if integrity and p.internet:
             tampered = integrity.alert_for(p)
             if tampered:
                 p.alerts.append(tampered)
+        scan = lan_scan.check(p.exe or p.name) if lan_scan else None
+        if scan:
+            p.alerts.append(scan)
         sent = traffic.uploaded(p.exe or p.name, UPLOAD_WINDOW) if traffic else 0
         if sent >= UPLOAD_LIMIT:
             p.alerts.append(Alert(LOW, f"Uploaded {human_bytes(sent)} in the last {UPLOAD_WINDOW // 60} min",

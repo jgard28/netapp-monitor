@@ -11,7 +11,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .collector import Process, severity_of
+from .collector import Process, local_kind, severity_of
 from .memory import STATE_DIR
 
 KEEP_DAYS = 30
@@ -22,7 +22,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS connections (
     id INTEGER PRIMARY KEY, app TEXT, name TEXT, pid INTEGER, proto TEXT, raddr TEXT, rport INTEGER,
     domain TEXT, country TEXT, owner TEXT, first REAL, last REAL, sent INTEGER, received INTEGER,
-    severity INTEGER, alerts TEXT);
+    severity INTEGER, alerts TEXT, scope TEXT DEFAULT 'internet');
 CREATE INDEX IF NOT EXISTS connections_last ON connections(last);
 CREATE INDEX IF NOT EXISTS connections_app ON connections(app, last);
 CREATE TABLE IF NOT EXISTS alerts (
@@ -40,6 +40,9 @@ class History:
         self.db = sqlite3.connect(self.path)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(connections)")}
+        if "scope" not in columns:  # databases from before local connections were recorded
+            self.db.execute("ALTER TABLE connections ADD COLUMN scope TEXT DEFAULT 'internet'")
         self.open: dict[tuple, list] = {}  # connection key -> [row id, latest values]
         self.alerted: dict[tuple, float] = {}
         self.flushed = 0.0
@@ -57,19 +60,24 @@ class History:
         with self.db:
             for p in procs:
                 app = p.exe or p.name
-                for c in p.internet:
+                for c in p.internet + p.local:
                     key = (p.pid, app, c.proto, c.laddr, c.lport, c.raddr, c.rport)
                     owner = c.owner
-                    values = {"domain": c.domain, "country": owner.country if owner else "",
-                              "owner": owner.org if owner else "", "last": now, "sent": c.sent,
+                    if c.scope == "internet":
+                        org = owner.org if owner else ""
+                    else:
+                        org = local_kind(c.raddr).lstrip("🏠🔒 ")
+                    values = {"domain": c.device or c.domain, "country": owner.country if owner else "",
+                              "owner": org, "last": now, "sent": c.sent,
                               "received": c.received, "severity": severity_of(c.alerts),
                               "alerts": "; ".join(a.message for a in c.alerts if not a.muted)}
                     entry = self.open.get(key)
                     if entry is None:
                         cur = self.db.execute(
-                            "INSERT INTO connections (app, name, pid, proto, raddr, rport, first, domain, country,"
-                            " owner, last, sent, received, severity, alerts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (app, p.name, p.pid, c.proto, c.raddr, c.rport, now, *values.values()))
+                            "INSERT INTO connections (scope, app, name, pid, proto, raddr, rport, first, domain,"
+                            " country, owner, last, sent, received, severity, alerts)"
+                            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (c.scope, app, p.name, p.pid, c.proto, c.raddr, c.rport, now, *values.values()))
                         entry = [cur.lastrowid, values]
                     else:
                         # Keep what we learned earlier if this snapshot lacks it (e.g. the DNS name).
@@ -113,18 +121,21 @@ class History:
 
     # --- queries ----------------------------------------------------------------
 
-    def destinations(self, since: float, needle: str = "") -> list[dict]:
-        """One row per app and destination seen since `since`, most recent first."""
+    def destinations(self, since: float, needle: str = "", scope: str = "") -> list[dict]:
+        """One row per app and destination seen since `since`, most recent first.
+
+        `scope` limits it to "internet" or "lan" connections; empty means both.
+        """
         like = f"%{needle.lower()}%"
         rows = self.db.execute(
             "SELECT app, MAX(name), raddr, rport, MAX(domain), MAX(country), MAX(owner), COUNT(*), MIN(first),"
-            " MAX(last), SUM(sent), SUM(received), MAX(severity), MAX(alerts) FROM connections"
-            " WHERE last >= ? AND (? = '%%' OR lower(app || ' ' || name || ' ' || raddr || ' ' ||"
-            " coalesce(domain, '') || ' ' || coalesce(owner, '')) LIKE ?)"
+            " MAX(last), SUM(sent), SUM(received), MAX(severity), MAX(alerts), MAX(scope) FROM connections"
+            " WHERE last >= ? AND (? = '' OR scope = ?) AND (? = '%%' OR lower(app || ' ' || name || ' ' ||"
+            " raddr || ' ' || coalesce(domain, '') || ' ' || coalesce(owner, '')) LIKE ?)"
             " GROUP BY app, raddr, rport ORDER BY MAX(last) DESC LIMIT 5000",
-            (since, like, like)).fetchall()
+            (since, scope, scope, like, like)).fetchall()
         keys = ("app", "name", "raddr", "rport", "domain", "country", "owner", "count", "first", "last",
-                "sent", "received", "severity", "alerts")
+                "sent", "received", "severity", "alerts", "scope")
         return [dict(zip(keys, r)) for r in rows]
 
     def alerts(self, since: float, needle: str = "") -> list[dict]:

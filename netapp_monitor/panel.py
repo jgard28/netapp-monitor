@@ -73,7 +73,7 @@ class DetailPanel(QFrame):
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignTop)
         for name in ("Path", "Command", "User", "PID", "Started", "Launched by", "Package", "Integrity",
-                     "SHA-256", "Online since", "Networks", "Right now", "Talking to", "Domains", "Traffic",
+                     "SHA-256", "Online since", "Networks", "Right now", "Talking to", "Domains", "Local devices", "Traffic",
                      "History"):
             self.fields[name] = self._label()
             form.addRow(f"<span style='color:{MUTED_COLOR}'>{name}</span>", self.fields[name])
@@ -229,17 +229,21 @@ class DetailPanel(QFrame):
             esc(f"{o.flag} {o.org}".strip()) + (f" ×{n}" if n > 1 else "")
             + (f" <span style='color:{WARN_COLOR}'>rented server</span>" if o.hosting else "")
             for o, n in owners.most_common(6)) or "—")
+        devices = Counter(c.device or (d.resolver.get(c.raddr) or c.raddr) for c in p.local)
+        f["Local devices"].setText(breakable(", ".join(f"{name} ×{n}" if n > 1 else name
+                                                       for name, n in devices.most_common(8)))
+                                   if devices else "—")
         domains = sorted({c.domain for c in p.internet if c.domain})
         f["Domains"].setText(breakable(", ".join(domains[:8]) + (f" +{len(domains) - 8} more" if len(domains) > 8 else ""))
                              if domains else f"<span style='color:{MUTED_COLOR}'>none seen (app may use its own DNS, "
                                              "e.g. DNS-over-HTTPS)</span>")
 
         up, down = p.up, p.down
-        sent = sum(c.sent for c in p.internet)
-        received = sum(c.received for c in p.internet)
+        sent = sum(c.sent for c in p.internet + p.local)
+        received = sum(c.received for c in p.internet + p.local)
         f["Traffic"].setText(f"↑ {human_bytes(up)}/s ↓ {human_bytes(down)}/s now<br>"
                              f"<span style='color:{MUTED_COLOR}'>↑ {human_bytes(sent)} ↓ {human_bytes(received)} "
-                             "on open connections (TCP only)</span>" if p.internet else "—")
+                             "on open connections (TCP only)</span>" if p.internet or p.local else "—")
         week = time.time() - 7 * 86400
         dests, logged = d.history.app_summary(p.exe or p.name, week)
         f["History"].setText(f"last 7 days: {dests} destination{'s' if dests != 1 else ''}, "

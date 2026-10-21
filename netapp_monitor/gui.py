@@ -14,21 +14,22 @@ from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QMainWindow,
     QMenu, QMessageBox, QPushButton, QSplitter, QStackedWidget, QSystemTrayIcon, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from . import blockctl, intel
 from .appinfo import AppInfoLoader, sha256
-from .collector import (HIGH, MEDIUM, SEVERITY_COLORS, SEVERITY_NAMES, Resolver, Traffic, human_bytes, rate_text,
-                        severity_of, snapshot, visible_connections)
-from .detect import INTERPRETER, SHELLS, BeaconTracker, analyze
+from .collector import (HIGH, MEDIUM, SEVERITY_COLORS, SEVERITY_NAMES, Resolver, Traffic, arp_table, human_bytes,
+                        local_kind, rate_text, severity_of, snapshot, visible_connections)
+from .detect import INTERPRETER, SHELLS, BeaconTracker, LanScanTracker, analyze
 from .dns import DnsWatcher
 from .explain import explain
 from .geo import GeoDB
 from .history import History
-from .memory import Baseline, Trust
+from .memory import Baseline, DeviceNames, Trust
 from .notifier import Notifier
 from .panel import DetailPanel
 
@@ -43,6 +44,11 @@ COLUMNS = ["Application / connection", "Alerts", "Traffic", "PID", "User", "Prot
            "Network", "State", "Scope"]
 ROLE = Qt.UserRole
 PAGE_CONNECTIONS, PAGE_HISTORY, PAGE_BLOCKED, PAGE_TRUSTED = range(4)
+VIEW_LABELS = {"internet": "Internet", "local": "Local network", "all": "Everything"}
+VIEW_TIPS = {"internet": "Connections to the internet (plus anything flagged)",
+             "local": "Connections to other devices on your network: media servers, NAS, Proxmox, printers…",
+             "all": "Also loopback, listening ports and broadcast/discovery traffic"}
+HISTORY_SCOPES = [("Internet and local", ""), ("Internet", "internet"), ("Local network", "lan")]
 HISTORY_RANGES = [("Last hour", 3600), ("Last 24 hours", 86400), ("Last 7 days", 7 * 86400),
                   ("Last 30 days", 30 * 86400)]
 SETUP_SCRIPT = Path(__file__).resolve().parent.parent / "install-system.sh"
@@ -119,6 +125,10 @@ class Dashboard(QMainWindow):
         self.geo = GeoDB()
         self.traffic = Traffic()
         self.history = History()
+        self.lan_scan = LanScanTracker()
+        self.devices = DeviceNames()
+        self.arp: dict[str, str] = {}
+        self.view = "internet"
         self.expanded: set = set()
         self.auto_expanded: set = set()
         self.notified: set = set()
@@ -185,19 +195,31 @@ class Dashboard(QMainWindow):
 
     def _connections_page(self):
         self.search = QLineEdit(placeholderText="Filter by app, path, PID, IP or host…")
-        self.show_all = QCheckBox("Include LAN / loopback / listening")
+        views = QButtonGroup(self)
+        views.setExclusive(True)
+        self.view_buttons = {}
+        for view, label in VIEW_LABELS.items():
+            b = QPushButton(label, checkable=True, checked=view == self.view)
+            b.setFlat(True)
+            b.setToolTip(VIEW_TIPS[view])
+            b.clicked.connect(lambda _=False, v=view: self.set_view(v))
+            views.addButton(b)
+            self.view_buttons[view] = b
         self.alerts_only = QCheckBox("Flagged only")
         self.new_only = QCheckBox("New only")
         self.new_only.setToolTip("Apps and destinations first seen in the last 24 hours")
         self.live = QCheckBox("Live", checked=True)
         refresh = QPushButton("Refresh")
-        for w in (self.search, self.show_all, self.alerts_only, self.new_only):
+        for w in (self.search, self.alerts_only, self.new_only):
             (w.textChanged if w is self.search else w.toggled).connect(self.populate)
         refresh.clicked.connect(self.tick)
 
         bar = QHBoxLayout()
+        for b in self.view_buttons.values():
+            bar.addWidget(b)
+        bar.addSpacing(12)
         bar.addWidget(self.search, 1)
-        for w in (self.show_all, self.alerts_only, self.new_only, self.live, refresh):
+        for w in (self.alerts_only, self.new_only, self.live, refresh):
             bar.addWidget(w)
 
         self.tree = QTreeWidget()
@@ -237,6 +259,10 @@ class Dashboard(QMainWindow):
         for label, _ in HISTORY_RANGES:
             self.history_range.addItem(label)
         self.history_range.setCurrentIndex(1)
+        self.history_scope = QComboBox()
+        for label, _ in HISTORY_SCOPES:
+            self.history_scope.addItem(label)
+        self.history_scope.currentIndexChanged.connect(self.populate_history)
         self.history_dest_btn = QPushButton("Destinations", checkable=True, checked=True)
         self.history_alert_btn = QPushButton("Alerts", checkable=True)
         group = QButtonGroup(self)
@@ -251,7 +277,7 @@ class Dashboard(QMainWindow):
         refresh.clicked.connect(self.populate_history)
         bar = QHBoxLayout()
         bar.addWidget(self.history_search, 1)
-        for w in (self.history_range, self.history_dest_btn, self.history_alert_btn, refresh):
+        for w in (self.history_scope, self.history_range, self.history_dest_btn, self.history_alert_btn, refresh):
             bar.addWidget(w)
 
         self.history_dests = QTreeWidget()
@@ -277,7 +303,7 @@ class Dashboard(QMainWindow):
         for w in (self.history_dests, self.history_alerts, self.history_empty):
             self.history_views.addWidget(w)
 
-        note = QLabel(f"Internet connections and alerts are kept for 30 days in {self.history.path}. "
+        note = QLabel(f"Internet and local network connections and alerts are kept for 30 days in {self.history.path}. "
                       "Nothing leaves your computer.")
         note.setStyleSheet(f"color: {BLOCKED_COLOR}")
         note.setWordWrap(True)
@@ -356,7 +382,11 @@ class Dashboard(QMainWindow):
             self.user_list_mtime = intel.user_list_mtime()
             self.load_intel()
         self.procs = analyze(snapshot(), self.blocklist, self.tracker, self.trust, self.baseline, self.loader,
-                             self.dns, self.geo, self.traffic)
+                             self.dns, self.geo, self.traffic, self.lan_scan)
+        self.arp = arp_table()
+        for p in self.procs:
+            for c in p.local:
+                c.device = self.devices.name_for(c.raddr, self.arp)
         try:
             self.history.record(self.procs)
         except Exception as e:  # a full disk or locked database must not stop monitoring
@@ -505,13 +535,14 @@ class Dashboard(QMainWindow):
                 continue
             if self.new_only.isChecked() and not p.has_new:
                 continue
-            conns = visible_connections(p, self.show_all.isChecked())
+            conns = visible_connections(p, self.view)
             if self.new_only.isChecked() and not p.new:
                 conns = [c for c in conns if c.new]
             if not conns and not p.alerts:
                 continue
-            # Prefer the name the app actually looked up; reverse DNS is the fallback.
-            hosts = {c.raddr: c.domain or self.resolver.get(c.raddr) for c in conns if c.scope == "internet"}
+            # Your name for a device first, then the name the app looked up, then reverse DNS.
+            hosts = {c.raddr: c.device or c.domain or self.resolver.get(c.raddr)
+                     for c in conns if c.scope in ("internet", "lan") and c.raddr}
             if needle:
                 proc_text = f"{p.name} {p.exe} {p.pid} {p.user}".lower()
                 if needle not in proc_text:
@@ -527,8 +558,11 @@ class Dashboard(QMainWindow):
                    (["Trusted app"] if p.exe and p.exe in self.trust.apps else [])
             alert_text = "; ".join(tags + [self._alert_text(a) for a in p.alerts])
             n_inet = sum(1 for c in conns if c.scope == "internet")
+            n_local = sum(1 for c in conns if c.local_device)
+            counts = ", ".join(filter(None, [f"{n_inet} internet" if n_inet or self.view == "internet" else "",
+                                             f"{n_local} local" if n_local or self.view == "local" else ""]))
             item = QTreeWidgetItem([p.name, alert_text, rate_text(p.up, p.down), str(p.pid or ""), p.user, "", "",
-                                    f"{n_inet} internet", "", "", "", ""])
+                                    counts, "", "", "", ""])
             item.setData(0, ROLE, key)
             item.setData(1, ROLE, p)
             item.setToolTip(0, "\n".join(filter(None, [p.exe, p.cmdline] +
@@ -543,7 +577,7 @@ class Dashboard(QMainWindow):
                         (["Trusted destination"] if c.raddr in self.trust.destinations else [])
                 child = QTreeWidgetItem(["", "; ".join(ctags + [self._alert_text(a) for a in c.alerts]),
                                          rate_text(c.up, c.down), "", "", c.proto, c.local, c.remote,
-                                         hosts.get(c.raddr, ""), owner_text(c.owner), c.status, c.scope])
+                                         hosts.get(c.raddr, ""), self._network_text(c), c.status, c.scope])
                 child.setData(1, ROLE, c)
                 child.setToolTip(1, self._alert_tooltip(c.alerts))
                 if c.sent or c.received:
@@ -625,7 +659,7 @@ class Dashboard(QMainWindow):
                 tree.addTopLevelItem(item)
             empty_text = "No alerts in this period."
         else:
-            rows = self.history.destinations(since, needle)
+            rows = self.history.destinations(since, needle, HISTORY_SCOPES[self.history_scope.currentIndex()][1])
             tree = self.history_dests
             open_apps = {tree.topLevelItem(i).data(0, ROLE) for i in range(tree.topLevelItemCount())
                          if tree.topLevelItem(i).isExpanded()}
@@ -660,7 +694,7 @@ class Dashboard(QMainWindow):
                 if parent.worst:
                     parent.setForeground(0, QBrush(QColor(SEVERITY_COLORS[parent.worst])))
                 parent.setExpanded(app in open_apps or len(apps) == 1)
-            empty_text = "No internet connections recorded in this period."
+            empty_text = "No connections recorded in this period."
         if needle:
             empty_text += f"\nNothing matches “{needle}”."
         self.history_empty.setText(empty_text)
@@ -674,6 +708,10 @@ class Dashboard(QMainWindow):
         ip = row["raddr"]
         menu = QMenu(self)
         menu.addAction(f"Copy {ip}", lambda: QGuiApplication.clipboard().setText(ip))
+        if row.get("scope") == "lan":
+            menu.addAction("Name this device…", lambda: self.name_device(ip))
+            menu.exec(tree.viewport().mapToGlobal(pos))
+            return
         menu.addAction("Look up on AbuseIPDB", lambda: self.open_url(f"https://www.abuseipdb.com/check/{ip}"))
         menu.addAction("Look up on VirusTotal", lambda: self.open_url(f"https://www.virustotal.com/gui/ip-address/{ip}"))
         menu.exec(tree.viewport().mapToGlobal(pos))
@@ -696,6 +734,26 @@ class Dashboard(QMainWindow):
             button.setToolTip("Stop trusting; its alerts come back")
             button.clicked.connect(lambda _=False, k=kind, v=key: self.set_trust(k, v, False))
             self.trusted_tree.setItemWidget(item, 4, button)
+
+    @staticmethod
+    def _network_text(c) -> str:
+        if c.scope == "internet":
+            return owner_text(c.owner)
+        return local_kind(c.raddr) if c.raddr else ""
+
+    def set_view(self, view: str):
+        self.view = view
+        self.view_buttons[view].setChecked(True)
+        self.populate()
+
+    def name_device(self, ip: str):
+        current = self.devices.name_for(ip, self.arp)
+        name, ok = QInputDialog.getText(self, "Name this device",
+                                        f"A name for {ip}, e.g. “Media server” (leave empty to remove):",
+                                        text=current)
+        if ok:
+            self.devices.set_name(ip, name, self.arp)
+            self.tick()
 
     @staticmethod
     def _alert_tooltip(alerts) -> str:
@@ -750,15 +808,20 @@ class Dashboard(QMainWindow):
                 menu.addAction(f"Kill {obj.name} (pid {obj.pid})…", lambda: self.kill(obj))
         elif obj.raddr:
             ip = obj.raddr
+            if obj.local_device:
+                named = self.devices.name_for(ip, self.arp)
+                menu.addAction(f"Rename “{named}”…" if named else "Name this device…", lambda: self.name_device(ip))
             if ip in self.trust.destinations:
                 menu.addAction(f"Stop trusting {ip}", lambda: self.set_trust("destination", ip, False))
             else:
                 menu.addAction(f"Trust this destination ({ip})", lambda: self.set_trust("destination", ip, True))
             menu.addSeparator()
             menu.addAction(f"Copy {ip}", lambda: QGuiApplication.clipboard().setText(ip))
-            menu.addAction("Look up on AbuseIPDB", lambda: self.open_url(f"https://www.abuseipdb.com/check/{ip}"))
-            menu.addAction("Look up on VirusTotal", lambda: self.open_url(f"https://www.virustotal.com/gui/ip-address/{ip}"))
-            menu.addAction("Look up on Shodan", lambda: self.open_url(f"https://www.shodan.io/host/{ip}"))
+            if obj.scope == "internet":
+                menu.addAction("Look up on AbuseIPDB", lambda: self.open_url(f"https://www.abuseipdb.com/check/{ip}"))
+                menu.addAction("Look up on VirusTotal",
+                               lambda: self.open_url(f"https://www.virustotal.com/gui/ip-address/{ip}"))
+                menu.addAction("Look up on Shodan", lambda: self.open_url(f"https://www.shodan.io/host/{ip}"))
         if not menu.isEmpty():
             menu.exec(self.tree.viewport().mapToGlobal(pos))
 

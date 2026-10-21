@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
 from . import intel
-from .collector import SEVERITY_NAMES, severity_of, reverse_dns, snapshot, visible_connections
+from .collector import SEVERITY_NAMES, local_kind, severity_of, reverse_dns, snapshot, visible_connections
 from .detect import analyze
 from .geo import GeoDB
 from .memory import Trust
@@ -20,7 +20,7 @@ def run(args) -> int:
     blocklist = intel.load(update=not args.offline)
     geo = GeoDB(update=not args.offline, background=False)
     procs = analyze(snapshot(), blocklist, trust=Trust(), geo=geo)
-    rows = [(p, visible_connections(p, args.all)) for p in procs]
+    rows = [(p, visible_connections(p, "all" if args.all else "local" if args.lan else "internet")) for p in procs]
     rows = [(p, conns) for p, conns in rows if conns or p.alerts]
     if args.alerts:
         rows = [(p, conns) for p, conns in rows if p.severity]
@@ -53,7 +53,7 @@ def run(args) -> int:
             print("    " + paint(DIM if a.muted else COLORS[a.severity], f"! {'(muted) ' if a.muted else ''}{a.message}"))
         for c in conns:
             host = hosts.get(c.raddr, "")
-            owner = c.owner.label() if c.owner else ""
+            owner = c.owner.label() if c.owner else local_kind(c.raddr) if c.raddr and c.scope != "internet" else ""
             line = f"    {c.proto:<3}  {c.local:<22} -> {c.remote or '*':<22} {c.status:<11} {c.scope:<9} {owner:<34} {host}"
             print(paint(COLORS[severity_of(c.alerts)], line.rstrip()))
             for a in c.alerts:

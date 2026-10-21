@@ -71,6 +71,34 @@ class Trust:
                     a.muted = (app_trusted or dest_trusted) and not never_mute
 
 
+class DeviceNames:
+    """Names you give devices on your network ("Media server"), remembered by MAC address
+    where known, so a device keeps its name when DHCP hands it a new IP."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = path or STATE_DIR / "devices.json"
+        self.devices: list[dict] = _load(self.path).get("devices", [])  # {"name", "ip", "mac"}
+
+    def name_for(self, ip: str | None, arp: dict[str, str]) -> str:
+        if not ip:
+            return ""
+        mac = arp.get(ip)
+        for d in self.devices:
+            if mac and d.get("mac") == mac:
+                return d["name"]
+        for d in self.devices:
+            if d.get("ip") == ip and not (mac and d.get("mac")):
+                return d["name"]
+        return ""
+
+    def set_name(self, ip: str, name: str, arp: dict[str, str]):
+        mac = arp.get(ip, "")
+        self.devices = [d for d in self.devices if d.get("ip") != ip and not (mac and d.get("mac") == mac)]
+        if name.strip():
+            self.devices.append({"name": name.strip(), "ip": ip, "mac": mac})
+        _save(self.path, {"devices": self.devices})
+
+
 def network_key(ip: str) -> str:
     """Group addresses by network so a CDN rotating IPs isn't 'new' every few minutes."""
     addr = ipaddress.ip_address(ip)

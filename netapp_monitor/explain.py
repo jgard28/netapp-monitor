@@ -116,6 +116,15 @@ EXPLANATIONS = {
         "out inside DNS queries.",
         "Browsers and some apps use their own secure DNS on purpose (DNS-over-TLS on 853).",
         "Is it a browser, VPN or DNS tool? Then it's expected. Otherwise look closer."),
+    "lan-scan": Explanation(
+        "The app is probing many devices or ports on your local network.",
+        "Attackers who get onto one machine scan the network to find the next one: routers, NAS "
+        "boxes, servers. Worms do the same automatically. This app opened connections to many "
+        "local addresses, or many ports on one device, in a couple of minutes.",
+        "Network tools you run on purpose (nmap, a network scanner app), device discovery in some "
+        "media or smart-home apps, or a backup tool walking several machines.",
+        "Did you start a scan? If not, look at the app's Path, Package and Launched by rows, and "
+        "block it while you investigate."),
     "upload": Explanation(
         "The app uploaded a lot of data recently.",
         "Stealing files means sending them out, so a large unexplained upload is a classic sign of "

@@ -47,6 +47,7 @@ class Connection:
     new: bool = False  # first contact with this destination network
     domain: str = ""  # the name the app looked up to get this IP, if DNS was watched
     owner: object = None  # geo.Owner of the remote address, once the database is loaded
+    device: str = ""  # the name you gave this local device, if any
     sent: int = 0  # bytes so far (TCP only; the kernel keeps no per-socket count for UDP)
     received: int = 0
     up: float = 0.0  # bytes per second since the last snapshot
@@ -64,6 +65,11 @@ class Connection:
     def remote(self):
         return _endpoint(self.raddr, self.rport) if self.raddr else ""
 
+    @property
+    def local_device(self) -> bool:
+        """A connection to another device on your network (not multicast/broadcast chatter)."""
+        return self.scope == "lan" and bool(self.raddr) and is_device(self.raddr)
+
 
 @dataclass
 class Process:
@@ -80,6 +86,10 @@ class Process:
     @property
     def internet(self):
         return [c for c in self.connections if c.scope == "internet"]
+
+    @property
+    def local(self):
+        return [c for c in self.connections if c.local_device]
 
     def all_alerts(self):
         return self.alerts + [a for c in self.connections for a in c.alerts]
@@ -127,11 +137,51 @@ def classify_ip(ip: str) -> str:
     return "internet"
 
 
-def visible_connections(proc: Process, show_all: bool) -> list[Connection]:
-    """Internet connections plus anything flagged, or everything when show_all is set."""
-    if show_all:
+def is_device(ip: str) -> bool:
+    addr = ipaddress.ip_address(ip)
+    return not (addr.is_multicast or addr.is_unspecified or addr.is_loopback or ip.endswith(".255"))
+
+
+def local_kind(ip: str) -> str:
+    """How to describe a non-internet address in the Network column."""
+    addr = ipaddress.ip_address(ip)
+    if addr.is_loopback:
+        return "This computer"
+    if addr in CGNAT:
+        return "🔒 Tailscale / CGNAT"
+    if addr.is_multicast or ip.endswith(".255"):
+        return "Broadcast / discovery"
+    if addr.is_link_local:
+        return "🏠 Local network (link-local)"
+    return "🏠 Local network"
+
+
+VIEWS = ("internet", "local", "all")
+
+
+def visible_connections(proc: Process, view: str | bool) -> list[Connection]:
+    """Connections for one view: "internet" (plus anything flagged), "local" (devices on your
+    network, plus anything flagged) or "all" (also loopback, listening and broadcast)."""
+    if view is True or view == "all":
         return proc.connections
+    if view == "local":
+        return [c for c in proc.connections if c.local_device or c.alerts]
     return [c for c in proc.connections if c.scope == "internet" or c.alerts]
+
+
+def arp_table() -> dict[str, str]:
+    """IP -> MAC address of devices this computer has talked to on the local network."""
+    table = {}
+    try:
+        with open("/proc/net/arp") as f:
+            next(f)
+            for line in f:
+                fields = line.split()
+                if len(fields) >= 4 and fields[3] != "00:00:00:00:00:00":
+                    table[fields[0]] = fields[3].lower()
+    except (OSError, StopIteration):
+        pass
+    return table
 
 
 def _proc_info(pid: int | None) -> Process:

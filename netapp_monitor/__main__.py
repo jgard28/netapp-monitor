@@ -11,6 +11,7 @@ def main() -> int:
     parser.add_argument("--cli", action="store_true", help="print a one-off report in the terminal")
     parser.add_argument("--json", action="store_true", help="print the report as JSON (implies --cli)")
     parser.add_argument("--all", action="store_true", help="include LAN, loopback and listening sockets")
+    parser.add_argument("--lan", action="store_true", help="show connections to devices on your local network")
     parser.add_argument("--alerts", action="store_true", help="only show flagged apps")
     parser.add_argument("--resolve", action="store_true", help="reverse-DNS remote IPs (CLI)")
     parser.add_argument("--offline", action="store_true", help="don't refresh threat-intel feeds (CLI)")
