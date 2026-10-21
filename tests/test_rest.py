@@ -144,3 +144,39 @@ class DomainAgeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnDnsTest(unittest.TestCase):
+    def test_known_doh_service(self):
+        from netapp_monitor.dns import is_doh, own_dns
+        doh = conn("162.159.61.4")
+        self.assertTrue(is_doh(doh))
+        self.assertFalse(is_doh(conn("162.159.61.4", rport=80)))
+        named = conn("203.0.113.5")
+        named.domain = "dns.nextdns.io"
+        self.assertTrue(is_doh(named))
+        self.assertTrue(own_dns(proc(1, conns=[doh]), {}, watching_since=100))
+        self.assertFalse(own_dns(proc(1, conns=[doh]), {}, watching_since=None))  # not watching: can't tell
+
+    def test_inferred_from_unnamed_fresh_connections(self):
+        from netapp_monitor.dns import own_dns
+        conns = [conn(f"203.0.113.{i}", lport=50000 + i) for i in range(3)]
+        p = proc(1, conns=conns)
+        seen = {c.key: 200 for c in conns}
+        self.assertTrue(own_dns(p, seen, watching_since=100, now=300))
+        conns[0].domain = "example.com"
+        self.assertFalse(own_dns(p, seen, watching_since=100, now=300))
+        # Connections that were already open when watching began don't count.
+        conns[0].domain = ""
+        self.assertFalse(own_dns(p, {c.key: 50 for c in conns}, watching_since=100, now=300))
+
+
+class AlwaysFileTest(unittest.TestCase):
+    def test_empty_list_removes_file_so_the_service_stops(self):
+        from netapp_monitor import blockctl
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(blockctl, "ALWAYS", f"{d}/always.json"):
+            blockctl.save_always({"/usr/bin/x": {"since": 1, "uid": 1000}})
+            self.assertEqual(list(blockctl.always_blocked()), ["/usr/bin/x"])
+            blockctl.save_always({})
+            self.assertFalse(Path(f"{d}/always.json").exists())
+            blockctl.save_always({})  # already gone: fine

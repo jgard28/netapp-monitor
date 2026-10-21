@@ -237,9 +237,20 @@ class DetailPanel(QFrame):
                                                        for name, n in devices.most_common(8)))
                                    if devices else "—")
         domains = sorted({c.domain for c in p.internet if c.domain})
-        f["Domains"].setText(breakable(", ".join(domains[:8]) + (f" +{len(domains) - 8} more" if len(domains) > 8 else ""))
-                             if domains else f"<span style='color:{MUTED_COLOR}'>none seen (app may use its own DNS, "
-                                             "e.g. DNS-over-HTTPS)</span>")
+        if d.dns.status != "watching":
+            domains_text = (f"<span style='color:{MUTED_COLOR}'>domain matching is off "
+                            "(optional, see Settings)</span>")
+        elif d.uses_own_dns(p):
+            domains_text = (f"<span style='color:{MUTED_COLOR}'>This app resolves names with its own encrypted DNS "
+                            "(DNS-over-HTTPS), so the domains it visits can’t be seen or checked. That’s a privacy "
+                            "setting in the app; its IP addresses are still checked.</span>")
+            if domains:
+                domains_text = breakable(", ".join(domains[:8])) + "<br>" + domains_text
+        elif domains:
+            domains_text = breakable(", ".join(domains[:8]) + (f" +{len(domains) - 8} more" if len(domains) > 8 else ""))
+        else:
+            domains_text = f"<span style='color:{MUTED_COLOR}'>none seen yet</span>"
+        f["Domains"].setText(domains_text)
 
         up, down = p.up, p.down
         sent = sum(c.sent for c in p.internet + p.local)

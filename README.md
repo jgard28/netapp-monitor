@@ -57,7 +57,7 @@ Child processes inherit their parent's sockets, so a shell and its subshells, or
 
 ### Domain age
 
-With domain matching on, each domain an app connects to is checked against its registry's public RDAP record (the modern WHOIS) to see when it was registered. Phishing, malware and C2 domains are usually days or weeks old; real services have usually existed for years. Only the registered name (`example.com`) is sent, directly to that TLD's registry as listed by IANA, and answers are cached in `~/.cache/netapp-monitor/domain-ages.json`, so each domain is asked about once. Some country domains (`.io`, `.de`, …) publish no RDAP data and are skipped. Turn it off from the tray menu (**Check how old domains are**).
+With domain matching on, each domain an app connects to is checked against its registry's public RDAP record (the modern WHOIS) to see when it was registered. Phishing, malware and C2 domains are usually days or weeks old; real services have usually existed for years. Only the registered name (`example.com`) is sent, directly to that TLD's registry as listed by IANA, and answers are cached in `~/.cache/netapp-monitor/domain-ages.json`, so each domain is asked about once. Some country domains (`.io`, `.de`, …) publish no RDAP data and are skipped. Because it sends domain names to registries, it's **off by default**: turn it on in **Settings → Check how old domains are**.
 
 ### Export report
 
@@ -123,19 +123,34 @@ netapp-monitor --report report.html    # save a snapshot report (.html or .json)
 
 State lives in `~/.local/state/netapp-monitor/` (`trust.json`, `baseline.json`, `history.db`). Delete `baseline.json` to start learning again.
 
+## Settings
+
+The **Settings** page (also in the tray menu) keeps every option in one place, each with a plain explanation:
+
+- **Alerts:** pop-up alerts on or off.
+- **Lookups that leave your computer:** off unless you turn them on, each saying exactly what it sends. Today that's the domain age check. It also lists what's always on and why nothing about you is sent there (threat-intel and IP-owner downloads, and lookups you click yourself).
+- **System features:** the status of domain matching, blocking and the always-block service, with the exact command (and a Copy button) to set up whatever isn't set up yet.
+
+NetApp Monitor never changes your browser or system settings for you, and works with whatever you have.
+
 ## System setup (optional, one time)
 
-Two features need system permissions, and both are enabled by one command:
+Everything above works without admin rights. Two optional features need them; install either or both:
 
 ```sh
-sudo ./install-system.sh     # or ~/.local/share/netapp-monitor/install-system.sh after ./install.sh
+sudo ./install-system.sh              # both
+sudo ./install-system.sh --blocking   # only blocking apps
+sudo ./install-system.sh --dns        # only domain matching
+sudo ./install-system.sh --remove     # undo everything
 ```
+
+(After `./install.sh`, the script is also at `~/.local/share/netapp-monitor/install-system.sh`.)
 
 ### Blocking apps
 
 Right-click an app on the **Connections** page and choose **Block internet access**. Every running process of that app is moved into its own cgroup (`/sys/fs/cgroup/netapp-blocked`). An nftables rule (`table inet netapp_monitor`) rejects all of their outgoing traffic except loopback, and their open connections are closed. Anything the app launches afterwards is blocked too. The **Blocked** page shows each blocked app with an **Unblock** button.
 
-By default a block lasts until you unblock the app, it exits, or you reboot. Tick **Always block this program** in the confirmation to make it permanent: the program's path is saved in `/etc/netapp-monitor/always-block.json`, and a small root service (`netapp-monitor-blockd`) watches every program start through the kernel's process-event connector and blocks matching programs the moment they start, also after a reboot. Always-blocked programs stay on the Blocked page even when they aren't running. Unblock removes them. (Blocking a shell or interpreter such as `python3` this way would block every script it runs; the dialog warns you.)
+By default a block lasts until you unblock the app, it exits, or you reboot. Tick **Always block this program** in the confirmation to make it permanent: the program's path is saved in `/etc/netapp-monitor/always-block.json`, and a small root service (`netapp-monitor-blockd`) watches every program start through the kernel's process-event connector and blocks matching programs the moment they start, also after a reboot. The service only runs while at least one program is always-blocked: a systemd path unit starts it when that file appears, and it stops when you unblock the last one. Always-blocked programs stay on the Blocked page even when they aren't running. Unblock removes them. (Blocking a shell or interpreter such as `python3` this way would block every script it runs; the dialog warns you.)
 
 You'll be asked for your password through polkit (cached for a few minutes). Only your own processes can be blocked.
 
@@ -150,7 +165,11 @@ A polkit rule lets your user (only you, in an active local session, with no pass
 
 Apps that do their own DNS (DNS-over-HTTPS in browsers, hard-coded IPs) bypass the system resolver. Their Host column falls back to reverse DNS. An app sending plain DNS or DNS-over-TLS straight to an outside server is itself flagged (low).
 
-Uninstall both with `sudo ./install-system.sh --remove`.
+#### Apps with their own encrypted DNS
+
+Some apps, including Firefox and Chrome in some regions, resolve names themselves over DNS-over-HTTPS, so their lookups never reach the system resolver and their domains can't be seen. NetApp Monitor detects this (an HTTPS connection to a known DoH service, or several new connections with no matching lookup). It says so in the app's detail panel and on the Settings page, and keeps checking those apps' IP addresses. DNS-over-HTTPS is a legitimate privacy setting, so NetApp Monitor doesn't ask you to change it. If you'd rather have domain checks for your browser, turn its DoH off; ideally pair that with encrypted DNS in systemd-resolved (`DNSOverTLS=`) so your lookups stay private.
+
+Uninstall with `sudo ./install-system.sh --remove`.
 
 ## See it in action
 

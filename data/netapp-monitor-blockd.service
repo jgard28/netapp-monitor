@@ -1,5 +1,6 @@
 [Unit]
 Description=NetApp Monitor: keep "always blocked" programs off the internet
+# Started on demand by netapp-monitor-blockd.path; exits when nothing is always-blocked.
 Documentation=https://github.com/jgard28/netapp-monitor
 After=nftables.service
 
@@ -11,6 +12,3 @@ Nice=-5
 ProtectHome=read-only
 PrivateTmp=yes
 NoNewPrivileges=yes
-
-[Install]
-WantedBy=multi-user.target

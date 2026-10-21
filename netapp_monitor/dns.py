@@ -19,6 +19,21 @@ MONITOR_SOCKET = "/run/systemd/resolve/io.systemd.Resolve.Monitor"
 SUBSCRIBE = {"method": "io.systemd.Resolve.Monitor.SubscribeQueryResults", "parameters": {}, "more": True}
 TYPE_A, TYPE_CNAME, TYPE_AAAA = 1, 5, 28
 
+# Public DNS-over-HTTPS services. An app talking HTTPS to one of these resolves names itself,
+# so its lookups never reach the system resolver (Firefox and Chrome do this by default in
+# some regions). That's a legitimate privacy choice, not an alert.
+DOH_HOSTS = ("cloudflare-dns.com", "dns.google", "dns.quad9.net", "dns.nextdns.io", "doh.mullvad.net",
+             "dns.adguard-dns.com", "doh.opendns.com", "doh.cleanbrowsing.org", "dns.controld.com")
+DOH_IPS = {
+    "1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001",  # Cloudflare
+    "162.159.61.4", "172.64.41.4", "2803:f800:53::4", "2a06:98c1:52::4",  # Firefox's Cloudflare
+    "162.159.61.3", "172.64.41.3", "2803:f800:53::3", "2a06:98c1:52::3",  # Chrome's Cloudflare
+    "104.16.248.249", "104.16.249.249", "2606:4700::6810:f8f9", "2606:4700::6810:f9f9",
+    "8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844",  # Google
+    "9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9",  # Quad9
+    "94.140.14.14", "94.140.15.15", "194.242.2.2", "208.67.222.222", "208.67.220.220",
+}
+
 
 def parse_result(params: dict) -> list[tuple[str, str]]:
     """(ip, domain) pairs from one SubscribeQueryResults reply.
@@ -56,6 +71,7 @@ class DnsWatcher:
         self.recent: deque[tuple[float, str]] = deque(maxlen=2000)  # (time, domain) lookups
         self.max_entries = max_entries
         self.status = "starting"  # starting, watching, needs-setup, unavailable
+        self.watching_since: float | None = None
         self.lock = threading.Lock()
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -107,8 +123,31 @@ class DnsWatcher:
                         if "Authentication" in msg["error"] or "PermissionDenied" in msg["error"]:
                             raise PermissionError(msg["error"])
                         raise OSError(msg["error"])
-                    self.status = "watching"
+                    if self.status != "watching":
+                        self.status, self.watching_since = "watching", time.time()
                     self.record(parse_result(msg.get("parameters") or {}))
+
+
+def is_doh(conn) -> bool:
+    """True for an HTTPS connection to a public DNS-over-HTTPS service."""
+    if conn.rport != 443:
+        return False
+    return conn.raddr in DOH_IPS or any(conn.domain == h or conn.domain.endswith("." + h) for h in DOH_HOSTS)
+
+
+def own_dns(proc, first_seen: dict, watching_since: float | None, now: float | None = None) -> bool:
+    """Whether the app resolves names itself (DNS-over-HTTPS), so its domains can't be seen.
+
+    Certain when it talks to a known DoH service; otherwise inferred when at least 3 of its
+    connections opened while lookups were being watched and none matched a lookup.
+    """
+    if watching_since is None or not proc.internet:
+        return False
+    if any(is_doh(c) for c in proc.internet):
+        return True
+    now = time.time() if now is None else now
+    fresh = [c for c in proc.internet if first_seen.get(c.key, 0) > watching_since + 5 and now - first_seen[c.key] > 3]
+    return len(fresh) >= 3 and not any(c.domain for c in fresh)
 
 
 # --- domain heuristics ------------------------------------------------------------

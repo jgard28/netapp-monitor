@@ -19,7 +19,7 @@ cp -r "$src/netapp_monitor" "$dest/"
 mkdir -p "$dest/data"
 cp "$src/install-system.sh" "$dest/"
 rm -f "$dest/install-blocking.sh"
-cp "$src/data/io.github.jgard28.netapp-monitor.policy" "$src/data/netapp-monitor-blockd.service" "$dest/data/"
+cp "$src/data/io.github.jgard28.netapp-monitor.policy" "$src/data/netapp-monitor-blockd.service" "$src/data/netapp-monitor-blockd.path" "$dest/data/"
 install -m644 "$src/data/netapp-monitor.svg" "$share/icons/hicolor/scalable/apps/netapp-monitor.svg"
 install -m644 "$src/data/netapp-monitor.desktop" "$share/applications/netapp-monitor.desktop"
 

@@ -9,7 +9,9 @@ the app already had open are killed with `ss -K` so it has to reconnect (and fai
 "Always block" remembers the program's path in /etc/netapp-monitor/always-block.json. A
 small root service (`netapp-blockctl daemon`, installed by install-system.sh) watches every
 program start through the kernel's process-event connector and moves matching processes into
-the blocked cgroup the moment they start, also after a reboot.
+the blocked cgroup the moment they start, also after a reboot. It only runs while that file
+exists: a systemd path unit starts it, the file is deleted when the last entry is removed,
+and the service then exits.
 
 Runs as root through pkexec (see data/*.policy); only processes owned by the calling user
 can be blocked. The unprivileged GUI imports this module just to read the current state.
@@ -38,6 +40,7 @@ TABLE = "netapp_monitor"
 INSTALLED_PATH = "/usr/local/libexec/netapp-monitor/netapp-blockctl"
 ALWAYS = "/etc/netapp-monitor/always-block.json"
 SERVICE = "/etc/systemd/system/netapp-monitor-blockd.service"
+PATH_UNIT = "/etc/systemd/system/netapp-monitor-blockd.path"
 
 RULESET = f"""\
 table inet {TABLE} {{
@@ -72,7 +75,16 @@ def installed() -> bool:
 
 
 def daemon_installed() -> bool:
-    return os.path.exists(SERVICE)
+    return os.path.exists(SERVICE) and os.path.exists(PATH_UNIT)
+
+
+def daemon_running() -> bool:
+    try:
+        out = subprocess.run(["systemctl", "is-active", "netapp-monitor-blockd.service"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() == "active"
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def always_blocked() -> dict[str, dict]:
@@ -177,6 +189,13 @@ def kill_sockets(pids):
 
 
 def save_always(entries: dict):
+    if not entries:
+        # No file means nothing to enforce, so the service stops (see the path unit).
+        try:
+            os.remove(ALWAYS)
+        except FileNotFoundError:
+            pass
+        return
     os.makedirs(os.path.dirname(ALWAYS), mode=0o755, exist_ok=True)
     tmp = ALWAYS + ".tmp"
     with open(tmp, "w") as f:
@@ -399,7 +418,8 @@ def daemon() -> int:
         try:
             current = os.stat(ALWAYS).st_mtime
         except OSError:
-            current = None
+            print("netapp-blockd: nothing is always-blocked any more; stopping", flush=True)
+            return 0
         if current != mtime:
             mtime, entries = current, always_blocked()
             last_scan = 0.0

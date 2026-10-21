@@ -25,7 +25,7 @@ from .appinfo import AppInfoLoader, sha256
 from .collector import (HIGH, MEDIUM, SEVERITY_COLORS, SEVERITY_NAMES, Resolver, Traffic, arp_table, human_bytes,
                         local_kind, merge_shared, rate_text, severity_of, snapshot, visible_connections)
 from .detect import INTERPRETER, SHELLS, BeaconTracker, LanScanTracker, analyze
-from .dns import DnsWatcher
+from .dns import DnsWatcher, own_dns
 from .domainage import DomainAges
 from .explain import explain
 from .geo import GeoDB
@@ -33,6 +33,7 @@ from .history import History
 from .memory import Baseline, DeviceNames, Trust
 from .notifier import Notifier
 from .panel import DetailPanel
+from .settingspage import SettingsPage
 
 APP_ID = "netapp-monitor"
 REFRESH_MS = 3000
@@ -44,7 +45,7 @@ NEW_COLOR = "#58a6ff"
 COLUMNS = ["Application / connection", "Alerts", "Traffic", "PID", "User", "Proto", "Local", "Remote", "Host",
            "Network", "State", "Scope"]
 ROLE = Qt.UserRole
-PAGE_CONNECTIONS, PAGE_HISTORY, PAGE_BLOCKED, PAGE_TRUSTED = range(4)
+PAGE_CONNECTIONS, PAGE_HISTORY, PAGE_BLOCKED, PAGE_TRUSTED, PAGE_SETTINGS = range(5)
 VIEW_LABELS = {"internet": "Internet", "local": "Local network", "all": "Everything"}
 VIEW_TIPS = {"internet": "Connections to the internet (plus anything flagged)",
              "local": "Connections to other devices on your network: media servers, NAS, Proxmox, printers…",
@@ -53,8 +54,8 @@ HISTORY_SCOPES = [("Internet and local", ""), ("Internet", "internet"), ("Local 
 HISTORY_RANGES = [("Last hour", 3600), ("Last 24 hours", 86400), ("Last 7 days", 7 * 86400),
                   ("Last 30 days", 30 * 86400)]
 SETUP_SCRIPT = Path(__file__).resolve().parent.parent / "install-system.sh"
-DNS_STATUS = {"starting": "DNS: connecting…", "watching": "DNS: watching lookups",
-              "needs-setup": f"DNS: off (run sudo {SETUP_SCRIPT} once)", "unavailable": "DNS: unavailable"}
+DNS_STATUS = {"starting": "Domains: connecting…", "watching": "Domains: watching lookups",
+              "needs-setup": "Domains: off (see Settings)", "unavailable": "Domains: unavailable"}
 
 
 def tray_icon(severity: int) -> QIcon:
@@ -128,7 +129,11 @@ class Dashboard(QMainWindow):
         self.history = History()
         self.lan_scan = LanScanTracker()
         self.settings = QSettings(APP_ID, APP_ID)
-        self.ages = DomainAges(enabled=self.settings.value("domain_age", True, type=bool))
+        # Sends domain names to registries, so it's off until you turn it on.
+        self.ages = DomainAges(enabled=self.settings.value("domain_age", False, type=bool))
+        self.popups_enabled = self.settings.value("popups", True, type=bool)
+        self.first_seen: dict[tuple, float] = {}  # connection key -> when it was first seen
+        self.settings_refreshed = 0.0
         self.devices = DeviceNames()
         self.arp: dict[str, str] = {}
         self.view = "internet"
@@ -143,7 +148,8 @@ class Dashboard(QMainWindow):
         self.history_tab = QPushButton("History", checkable=True)
         self.block_tab = QPushButton("Blocked", checkable=True)
         self.trust_tab = QPushButton("Trusted", checkable=True)
-        self.tabs = (self.conn_tab, self.history_tab, self.block_tab, self.trust_tab)
+        self.settings_tab = QPushButton("Settings", checkable=True)
+        self.tabs = (self.conn_tab, self.history_tab, self.block_tab, self.trust_tab, self.settings_tab)
         group = QButtonGroup(self)
         group.setExclusive(True)
         switcher = QHBoxLayout()
@@ -159,6 +165,8 @@ class Dashboard(QMainWindow):
         self.pages.addWidget(self._history_page())
         self.pages.addWidget(self._blocked_page())
         self.pages.addWidget(self._trusted_page())
+        self.settings_page = SettingsPage(self, SETUP_SCRIPT)
+        self.pages.addWidget(self.settings_page)
 
         self.status = QLabel()
         layout = QVBoxLayout()
@@ -177,14 +185,11 @@ class Dashboard(QMainWindow):
             menu.addAction("Show dashboard", self.show_window)
             self.popups = menu.addAction("Pop-up alerts")
             self.popups.setCheckable(True)
-            self.popups.setChecked(True)
+            self.popups.setChecked(self.popups_enabled)
+            self.popups.toggled.connect(self.set_popups)
             menu.addAction("Refresh threat intel", self.load_intel)
             menu.addAction("Export report…", self.export_report)
-            age = menu.addAction("Check how old domains are")
-            age.setCheckable(True)
-            age.setChecked(self.ages.enabled)
-            age.setToolTip("Asks each domain's registry (RDAP) when it was registered. Only the domain name is sent.")
-            age.toggled.connect(self.set_domain_age)
+            menu.addAction("Settings…", lambda: (self.switch_page(PAGE_SETTINGS), self.show_window()))
             menu.addSeparator()
             menu.addAction("Quit", QApplication.quit)
             self.tray.setContextMenu(menu)
@@ -396,6 +401,9 @@ class Dashboard(QMainWindow):
         self.procs = analyze(snapshot(), self.blocklist, self.tracker, self.trust, self.baseline, self.loader,
                              self.dns, self.geo, self.traffic, self.lan_scan, self.ages)
         self.arp = arp_table()
+        now = time.time()
+        current = {c.key for p in self.procs for c in p.internet}
+        self.first_seen = {k: self.first_seen.get(k, now) for k in current}
         for p in self.procs:
             for c in p.local:
                 c.device = self.devices.name_for(c.raddr, self.arp)
@@ -477,7 +485,7 @@ class Dashboard(QMainWindow):
                 if a.severity >= MEDIUM and not a.muted and key not in self.notified:
                     self.notified.add(key)
                     fresh.append((p, a))
-        if not fresh or not self.popups.isChecked():
+        if not fresh or not self.popups_enabled:
             return
         worst = max(a.severity for _, a in fresh)
         if len(fresh) > POPUP_BATCH:
@@ -523,6 +531,8 @@ class Dashboard(QMainWindow):
         self.pages.setCurrentIndex(index)
         if index == PAGE_HISTORY:
             self.populate_history()
+        if index == PAGE_SETTINGS:
+            self.settings_refreshed = 0.0
         self.populate()
 
     def show_history(self, needle: str):
@@ -538,6 +548,11 @@ class Dashboard(QMainWindow):
             return
         if page == PAGE_TRUSTED:
             self.populate_trusted()
+            return
+        if page == PAGE_SETTINGS:
+            if time.time() - self.settings_refreshed > 10:  # status checks run systemctl; no need every tick
+                self.settings_refreshed = time.time()
+                self.settings_page.refresh()
             return
         needle = self.search.text().strip().lower()
         scroll = self.tree.verticalScrollBar().value()
@@ -853,7 +868,7 @@ class Dashboard(QMainWindow):
             QMessageBox.information(
                 self, "One-time setup needed",
                 "Blocking needs a small helper installed with admin rights. Run this once in a terminal:\n\n"
-                f"sudo {SETUP_SCRIPT}")
+                f"sudo {SETUP_SCRIPT} --blocking\n\nThe Settings page shows this too, with a Copy button.")
             return
         pids = same_app_pids(proc)
         box = QMessageBox(QMessageBox.Question, "Block internet access",
@@ -867,7 +882,7 @@ class Dashboard(QMainWindow):
             always.setEnabled(False)
         elif not blockctl.daemon_installed():
             always.setEnabled(False)
-            always.setToolTip(f"Needs the always-block service: run sudo {SETUP_SCRIPT} once more")
+            always.setToolTip(f"Needs the always-block service: run sudo {SETUP_SCRIPT} --blocking once more")
         elif base in SHELLS or INTERPRETER.match(base):
             box.setInformativeText(f"Note: {base} runs many different scripts. “Always block” would cut off "
                                    f"every {base} program on this computer, not just this one.")
@@ -907,7 +922,19 @@ class Dashboard(QMainWindow):
     def set_domain_age(self, enabled: bool):
         self.ages.enabled = enabled
         self.settings.setValue("domain_age", enabled)
+        self.settings_refreshed = 0.0
         self.tick()
+
+    def set_popups(self, enabled: bool):
+        self.popups_enabled = enabled
+        self.settings.setValue("popups", enabled)
+        if self.tray and self.popups.isChecked() != enabled:
+            self.popups.setChecked(enabled)
+        self.settings_refreshed = 0.0
+        self.populate()
+
+    def uses_own_dns(self, proc) -> bool:
+        return own_dns(proc, self.first_seen, self.dns.watching_since)
 
     def export_report(self):
         folder = Path.home() / "Downloads"

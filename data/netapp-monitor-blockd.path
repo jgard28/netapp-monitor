@@ -1,0 +1,10 @@
+[Unit]
+Description=NetApp Monitor: start the always-block service when a program is always-blocked
+Documentation=https://github.com/jgard28/netapp-monitor
+
+[Path]
+PathExists=/etc/netapp-monitor/always-block.json
+Unit=netapp-monitor-blockd.service
+
+[Install]
+WantedBy=paths.target
