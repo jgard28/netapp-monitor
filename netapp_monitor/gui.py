@@ -378,10 +378,28 @@ class Dashboard(QMainWindow):
         self.status.setText(summary)
         if self.tray:
             self.tray.setIcon(tray_icon(worst))
-            self.tray.setToolTip(f"NetApp Monitor\n{summary}")
+            self.tray.setToolTip(self.tray_summary(worst, flagged, new, internet, up, down, learning))
             self.notify()
         if self.isVisible() and self.live.isChecked():
             self.populate()
+
+    def tray_summary(self, worst, flagged, new, internet, up, down, learning) -> str:
+        """A short hover card: the verdict first, then a few key numbers, one per line."""
+        if flagged:
+            verdict = f"⚠ {flagged} app{'s' if flagged != 1 else ''} flagged ({SEVERITY_NAMES[worst]})"
+        else:
+            verdict = "✔ All clear"
+        lines = ["NetApp Monitor", verdict, f"{internet} internet connection{'s' if internet != 1 else ''}",
+                 f"↑ {human_bytes(up)}/s   ↓ {human_bytes(down)}/s"]
+        if learning:
+            lines.append(f"Learning normal traffic ({ago(learning)} left)")
+        elif new:
+            lines.append(f"{new} new")
+        if self.blocked_apps:
+            lines.append(f"{len(self.blocked_apps)} blocked")
+        if self.dns.status != "watching":
+            lines.append("DNS matching off")
+        return "\n".join(lines)
 
     def refresh_blocked(self):
         self.blocked_pids = blockctl.blocked_pids()
