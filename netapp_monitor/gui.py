@@ -11,7 +11,8 @@ from pathlib import Path
 
 import psutil
 from PySide6.QtCore import QProcess, QSettings, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPainter, QPen,
+                           QPixmap, QShortcut)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -169,6 +170,7 @@ class Dashboard(QMainWindow):
         self.notified: set = set()
         self.helper: QProcess | None = None
         self.selected = None  # (pid, exe) of the app shown in the detail panel
+        self.just_current = None
         self.headers: dict[str, QHeaderView] = {}  # list headers whose column layout is remembered
 
         # View switcher: Connections | History | Blocked | Trusted
@@ -294,7 +296,12 @@ class Dashboard(QMainWindow):
             self.tree.setColumnWidth(col, width)
         header.setStretchLastSection(True)
         self.column_menu(self.tree, "connections", HIDDEN_COLUMNS)
-        self.tree.currentItemChanged.connect(self.select_item)
+        # Details open only on a click or Enter; Qt makes the first row current when the list gets focus,
+        # which must not pop the panel over the columns. Arrow keys follow along once it's open.
+        self.tree.currentItemChanged.connect(self.follow_item)
+        self.tree.itemClicked.connect(self.toggle_item)
+        self.tree.itemActivated.connect(self.select_item)
+        QShortcut(QKeySequence(Qt.Key_Escape), self.tree, self.close_details)
 
         self.details = DetailPanel(self)
         self.details.hide()
@@ -567,6 +574,7 @@ class Dashboard(QMainWindow):
             if pid and (row.pid == pid or pid in row.pids):
                 item.setExpanded(True)
                 self.tree.setCurrentItem(item)
+                self.select_item(item)
                 self.tree.scrollToItem(item, QTreeWidget.PositionAtTop)
                 break
 
@@ -683,7 +691,25 @@ class Dashboard(QMainWindow):
         self.tree.setUpdatesEnabled(True)
         self.tree.verticalScrollBar().setValue(scroll)
 
-    def select_item(self, item, _previous=None):
+    def follow_item(self, item, _previous=None):
+        self.just_current = item  # a click lands here first; it shouldn't then count as clicking the open app
+        if self.details.isVisible():
+            self.select_item(item)
+
+    def toggle_item(self, item, _column=0):
+        """Clicking the app whose details are showing closes them; any other row opens its app."""
+        fresh, self.just_current = self.just_current is item, None
+        if (not fresh and item.parent() is None and self.details.isVisible()
+                and self._key(item) == self.selected):
+            self.close_details()
+        else:
+            self.select_item(item)
+
+    def _key(self, item):
+        proc = (item.parent() or item).data(1, ROLE)
+        return (proc.pid, proc.exe or proc.name)
+
+    def select_item(self, item, _column=None):
         if item is None:
             return
         proc = (item.parent() or item).data(1, ROLE)

@@ -40,7 +40,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 
 Every alert has a **What does this mean?** link in the detail panel (and a one-line summary in its tooltip and pop-up) explaining what it means, when it's harmless and what to check.
 
-Click an app to open its **detail panel**. It shows:
+Click an app (or press Enter) to open its **detail panel**; click it again, press Esc or use ✕ to close it. While it's open, the arrow keys move it between apps. It shows:
 
 - **A verdict on where the program came from:** "Installed by your package manager (firefox 158.0-1)", or a warning when no package owns the file.
 - **How it was launched:** the parent chain, e.g. `bash ← systemd`.
