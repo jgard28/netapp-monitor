@@ -10,14 +10,14 @@ import time
 from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QProcess, QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QProcess, QSettings, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QMainWindow,
-    QMenu, QMessageBox, QPushButton, QSplitter, QStackedWidget, QSystemTrayIcon, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QPushButton, QSizePolicy, QSplitter, QStackedWidget, QSystemTrayIcon, QToolButton, QTreeWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import blockctl, intel, report
@@ -54,6 +54,8 @@ HISTORY_SCOPES = [("Internet and local", ""), ("Internet", "internet"), ("Local 
 HISTORY_RANGES = [("Last hour", 3600), ("Last 24 hours", 86400), ("Last 7 days", 7 * 86400),
                   ("Last 30 days", 30 * 86400)]
 SETUP_SCRIPT = Path(__file__).resolve().parent.parent / "install-system.sh"
+STACK_BELOW = 1100  # narrower windows (e.g. a tiled half screen) show the detail panel under the list
+HIDDEN_COLUMNS = (COLUMNS.index("Local"), COLUMNS.index("Scope"))  # until shown from the header's right-click menu
 DNS_STATUS = {"starting": "Domains: connecting…", "watching": "Domains: watching lookups",
               "needs-setup": "Domains: off (see Settings)", "unavailable": "Domains: unavailable"}
 
@@ -93,6 +95,29 @@ def when(ts: float) -> str:
 
 def owner_text(owner) -> str:
     return owner.label() if owner else ""
+
+
+class ElidedLabel(QLabel):
+    """One-line label that shortens itself with "…" instead of forcing the window wider."""
+
+    def __init__(self):
+        super().__init__()
+        self.full = ""
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+    def setText(self, text):  # noqa: N802 (Qt naming)
+        self.full = text
+        self._elide()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QSize(0, super().minimumSizeHint().height())
+
+    def _elide(self):
+        super().setText(self.fontMetrics().elidedText(self.full, Qt.ElideRight, max(self.width(), 0)))
 
 
 def same_app_pids(proc) -> list[int]:
@@ -142,6 +167,7 @@ class Dashboard(QMainWindow):
         self.notified: set = set()
         self.helper: QProcess | None = None
         self.selected = None  # (pid, exe) of the app shown in the detail panel
+        self.headers: dict[str, QHeaderView] = {}  # list headers whose column layout is remembered
 
         # View switcher: Connections | History | Blocked | Trusted
         self.conn_tab = QPushButton("Connections", checkable=True, checked=True)
@@ -168,7 +194,7 @@ class Dashboard(QMainWindow):
         self.settings_page = SettingsPage(self, SETUP_SCRIPT)
         self.pages.addWidget(self.settings_page)
 
-        self.status = QLabel()
+        self.status = ElidedLabel()
         layout = QVBoxLayout()
         layout.addLayout(switcher)
         layout.addWidget(self.pages, 1)
@@ -177,7 +203,7 @@ class Dashboard(QMainWindow):
         central.setLayout(layout)
         self.setCentralWidget(central)
         self.setStyleSheet("QPushButton:flat { padding: 4px 12px; border: none; border-bottom: 2px solid transparent; }"
-                           "QPushButton:flat:checked { border-bottom: 2px solid palette(highlight); font-weight: bold; }")
+                           "QPushButton:flat:checked { border-bottom: 2px solid palette(link); font-weight: bold; }")
 
         self.tray = QSystemTrayIcon(tray_icon(0), self) if has_tray else None
         if self.tray:
@@ -219,10 +245,22 @@ class Dashboard(QMainWindow):
             b.clicked.connect(lambda _=False, v=view: self.set_view(v))
             views.addButton(b)
             self.view_buttons[view] = b
-        self.alerts_only = QCheckBox("Flagged only")
-        self.new_only = QCheckBox("New only")
+        self.filters = QToolButton(popupMode=QToolButton.InstantPopup)
+        self.filters.setToolTip("Show only flagged or new apps, or pause live updates")
+        filter_menu = QMenu(self.filters)
+        filter_menu.setToolTipsVisible(True)
+        self.alerts_only = filter_menu.addAction("Flagged only")
+        self.new_only = filter_menu.addAction("New only")
         self.new_only.setToolTip("Apps and destinations first seen in the last 24 hours")
-        self.live = QCheckBox("Live", checked=True)
+        filter_menu.addSeparator()
+        self.live = filter_menu.addAction("Live updates")
+        self.live.setToolTip("Refresh the list every few seconds")
+        for action in (self.alerts_only, self.new_only, self.live):
+            action.setCheckable(True)
+            action.toggled.connect(self.update_filters_button)
+        self.live.setChecked(True)
+        self.filters.setMenu(filter_menu)
+        self.update_filters_button()
         refresh = QPushButton("Refresh")
         export = QPushButton("Export…")
         export.setToolTip("Save a report of current connections, alerts and program hashes (HTML or JSON)")
@@ -235,8 +273,9 @@ class Dashboard(QMainWindow):
         for b in self.view_buttons.values():
             bar.addWidget(b)
         bar.addSpacing(12)
+        self.search.setMinimumWidth(120)
         bar.addWidget(self.search, 1)
-        for w in (self.alerts_only, self.new_only, self.live, refresh, export):
+        for w in (self.filters, refresh, export):
             bar.addWidget(w)
 
         self.tree = QTreeWidget()
@@ -252,11 +291,13 @@ class Dashboard(QMainWindow):
         for col, width in enumerate((230, 380, 170, 70, 70, 50, 180, 190, 220, 230, 100)):
             self.tree.setColumnWidth(col, width)
         header.setStretchLastSection(True)
+        self.column_menu(self.tree, "connections", HIDDEN_COLUMNS)
         self.tree.currentItemChanged.connect(self.select_item)
 
         self.details = DetailPanel(self)
         self.details.hide()
-        splitter = QSplitter()
+        self.splitter = splitter = QSplitter()
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(self.tree)
         splitter.addWidget(self.details)
         splitter.setStretchFactor(0, 3)
@@ -311,6 +352,8 @@ class Dashboard(QMainWindow):
         self.history_alerts.setAlternatingRowColors(True)
         for col, width in enumerate((110, 80, 180, 520, 190)):
             self.history_alerts.setColumnWidth(col, width)
+        self.column_menu(self.history_dests, "history-destinations")
+        self.column_menu(self.history_alerts, "history-alerts")
         for tree in (self.history_dests, self.history_alerts):
             tree.setContextMenuPolicy(Qt.CustomContextMenu)
             tree.customContextMenuRequested.connect(lambda pos, t=tree: self.history_menu(t, pos))
@@ -422,11 +465,12 @@ class Dashboard(QMainWindow):
         new_text = f"learning normal traffic, {ago(learning)} left" if learning else f"{new} new"
         up = sum(c.up for p in self.procs for c in p.internet)
         down = sum(c.down for p in self.procs for c in p.internet)
-        summary = (f"{len(self.procs)} apps · {internet} internet connections · "
-                   f"↑ {human_bytes(up)}/s ↓ {human_bytes(down)}/s · {flagged} flagged · "
-                   f"{new_text} · {len(self.blocked_apps)} blocked · {DNS_STATUS[self.dns.status]} · "
-                   f"intel: {self.blocklist.summary() or 'loading…'}")
-        self.status.setText(summary)
+        parts = [f"{len(self.procs)} apps", f"{internet} internet connections",
+                 f"↑ {human_bytes(up)}/s ↓ {human_bytes(down)}/s", f"{flagged} flagged", new_text,
+                 f"{len(self.blocked_apps)} blocked", DNS_STATUS[self.dns.status],
+                 f"intel: {self.blocklist.summary() or 'loading…'}"]
+        self.status.setText(" · ".join(parts))  # shortened with "…" when the window is narrow
+        self.status.setToolTip("\n".join(parts))
         if self.tray:
             self.tray.setIcon(tray_icon(worst))
             self.tray.setToolTip(self.tray_summary(worst, flagged, new, internet, up, down, learning))
@@ -644,6 +688,51 @@ class Dashboard(QMainWindow):
         self.selected = (proc.pid, proc.exe or proc.name)
         self.details.show_process(proc)
         self.details.show()
+
+    def update_filters_button(self, _checked=False):
+        active = [a.text() for a in (self.alerts_only, self.new_only) if a.isChecked()]
+        if not self.live.isChecked():
+            active.append("paused")
+        self.filters.setText(f"Filters: {', '.join(active)}" if active else "Filters")
+
+    def column_menu(self, tree, key: str, hidden=()):
+        """Right-click a list's header to choose its columns; widths, order and choices are remembered."""
+        header = tree.header()
+        state = self.settings.value(f"columns/{key}")
+        if state is None or not header.restoreState(state):
+            for col in hidden:
+                tree.setColumnHidden(col, True)
+        header.setToolTip("Right-click to choose columns")
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        def show(pos):
+            menu = QMenu(self)
+            for col in range(1, tree.columnCount()):  # the first column (the app) always stays
+                action = menu.addAction(tree.headerItem().text(col))
+                action.setCheckable(True)
+                action.setChecked(not tree.isColumnHidden(col))
+                action.toggled.connect(lambda on, c=col: (tree.setColumnHidden(c, not on), self.save_layout()))
+            menu.exec(header.mapToGlobal(pos))
+
+        header.customContextMenuRequested.connect(show)
+        self.headers[key] = header
+
+    def save_layout(self):
+        for key, header in self.headers.items():
+            self.settings.setValue(f"columns/{key}", header.saveState())
+
+    def resizeEvent(self, event):  # noqa: N802
+        """Side by side when there's room, the detail panel under the list when the window is narrow."""
+        super().resizeEvent(event)
+        orientation = Qt.Vertical if self.width() < STACK_BELOW else Qt.Horizontal
+        if self.splitter.orientation() != orientation:
+            self.splitter.setOrientation(orientation)
+            if orientation == Qt.Vertical:
+                total = max(self.splitter.height(), 400)
+                self.splitter.setSizes([total * 3 // 5, total * 2 // 5])
+            else:
+                total = max(self.splitter.width(), 800)
+                self.splitter.setSizes([total - 420, 420])
 
     def close_details(self):
         self.selected = None
@@ -1051,6 +1140,7 @@ def main(start_hidden: bool = False, reveal_pid: int | None = None) -> int:
     app.aboutToQuit.connect(window.baseline.save)
     app.aboutToQuit.connect(window.history.close)
     app.aboutToQuit.connect(window.ages.save)
+    app.aboutToQuit.connect(window.save_layout)
     if reveal_pid is not None:
         window.reveal(reveal_pid or None)
     elif not (start_hidden and has_tray):
