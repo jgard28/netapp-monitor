@@ -192,7 +192,10 @@ class DetailPanel(QFrame):
         f["Path"].setText(breakable(p.exe or "unknown"))
         f["Command"].setText(f"<code>{breakable(p.cmdline[:600]) or '—'}</code>")
         f["User"].setText(esc(p.user or "?"))
-        f["PID"].setText(str(p.pid or "—"))
+        others = [pid for pid in p.pids if pid != p.pid]
+        f["PID"].setText(str(p.pid or "—") + (f" <span style='color:{MUTED_COLOR}'>(also "
+                                              f"{', '.join(map(str, others[:8]))}{'…' if len(others) > 8 else ''}"
+                                              ", sharing the same connections)</span>" if others else ""))
         start = started(p.pid) if p.pid else None
         f["Started"].setText(f"{time.strftime('%b %d %H:%M', time.localtime(start))} ({ago(time.time() - start)})"
                              if start else "—")

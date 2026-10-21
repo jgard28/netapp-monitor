@@ -10,22 +10,23 @@ import time
 from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
+from PySide6.QtCore import QProcess, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QMainWindow,
     QMenu, QMessageBox, QPushButton, QSplitter, QStackedWidget, QSystemTrayIcon, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
-from . import blockctl, intel
+from . import blockctl, intel, report
 from .appinfo import AppInfoLoader, sha256
 from .collector import (HIGH, MEDIUM, SEVERITY_COLORS, SEVERITY_NAMES, Resolver, Traffic, arp_table, human_bytes,
-                        local_kind, rate_text, severity_of, snapshot, visible_connections)
+                        local_kind, merge_shared, rate_text, severity_of, snapshot, visible_connections)
 from .detect import INTERPRETER, SHELLS, BeaconTracker, LanScanTracker, analyze
 from .dns import DnsWatcher
+from .domainage import DomainAges
 from .explain import explain
 from .geo import GeoDB
 from .history import History
@@ -126,6 +127,8 @@ class Dashboard(QMainWindow):
         self.traffic = Traffic()
         self.history = History()
         self.lan_scan = LanScanTracker()
+        self.settings = QSettings(APP_ID, APP_ID)
+        self.ages = DomainAges(enabled=self.settings.value("domain_age", True, type=bool))
         self.devices = DeviceNames()
         self.arp: dict[str, str] = {}
         self.view = "internet"
@@ -176,6 +179,12 @@ class Dashboard(QMainWindow):
             self.popups.setCheckable(True)
             self.popups.setChecked(True)
             menu.addAction("Refresh threat intel", self.load_intel)
+            menu.addAction("Export report…", self.export_report)
+            age = menu.addAction("Check how old domains are")
+            age.setCheckable(True)
+            age.setChecked(self.ages.enabled)
+            age.setToolTip("Asks each domain's registry (RDAP) when it was registered. Only the domain name is sent.")
+            age.toggled.connect(self.set_domain_age)
             menu.addSeparator()
             menu.addAction("Quit", QApplication.quit)
             self.tray.setContextMenu(menu)
@@ -210,6 +219,9 @@ class Dashboard(QMainWindow):
         self.new_only.setToolTip("Apps and destinations first seen in the last 24 hours")
         self.live = QCheckBox("Live", checked=True)
         refresh = QPushButton("Refresh")
+        export = QPushButton("Export…")
+        export.setToolTip("Save a report of current connections, alerts and program hashes (HTML or JSON)")
+        export.clicked.connect(self.export_report)
         for w in (self.search, self.alerts_only, self.new_only):
             (w.textChanged if w is self.search else w.toggled).connect(self.populate)
         refresh.clicked.connect(self.tick)
@@ -219,7 +231,7 @@ class Dashboard(QMainWindow):
             bar.addWidget(b)
         bar.addSpacing(12)
         bar.addWidget(self.search, 1)
-        for w in (self.alerts_only, self.new_only, self.live, refresh):
+        for w in (self.alerts_only, self.new_only, self.live, refresh, export):
             bar.addWidget(w)
 
         self.tree = QTreeWidget()
@@ -382,7 +394,7 @@ class Dashboard(QMainWindow):
             self.user_list_mtime = intel.user_list_mtime()
             self.load_intel()
         self.procs = analyze(snapshot(), self.blocklist, self.tracker, self.trust, self.baseline, self.loader,
-                             self.dns, self.geo, self.traffic, self.lan_scan)
+                             self.dns, self.geo, self.traffic, self.lan_scan, self.ages)
         self.arp = arp_table()
         for p in self.procs:
             for c in p.local:
@@ -391,6 +403,7 @@ class Dashboard(QMainWindow):
             self.history.record(self.procs)
         except Exception as e:  # a full disk or locked database must not stop monitoring
             print(f"netapp-monitor: history not saved: {e}", file=sys.stderr)
+        self.procs = merge_shared(self.procs)
         self.refresh_blocked()
         self.trust_tab.setText(f"Trusted ({len(self.trust)})" if len(self.trust) else "Trusted")
         worst = max((p.severity for p in self.procs), default=0)
@@ -496,7 +509,8 @@ class Dashboard(QMainWindow):
         self.show_window()
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
-            if pid and item.data(1, ROLE).pid == pid:
+            row = item.data(1, ROLE)
+            if pid and (row.pid == pid or pid in row.pids):
                 item.setExpanded(True)
                 self.tree.setCurrentItem(item)
                 self.tree.scrollToItem(item, QTreeWidget.PositionAtTop)
@@ -561,8 +575,13 @@ class Dashboard(QMainWindow):
             n_local = sum(1 for c in conns if c.local_device)
             counts = ", ".join(filter(None, [f"{n_inet} internet" if n_inet or self.view == "internet" else "",
                                              f"{n_local} local" if n_local or self.view == "local" else ""]))
-            item = QTreeWidgetItem([p.name, alert_text, rate_text(p.up, p.down), str(p.pid or ""), p.user, "", "",
+            extra = len(p.pids) - 1
+            item = QTreeWidgetItem([p.name + (f"  (+{extra} process{'es' if extra > 1 else ''})" if extra > 0 else ""),
+                                    alert_text, rate_text(p.up, p.down),
+                                    str(p.pid or "") + (f" +{extra}" if extra > 0 else ""), p.user, "", "",
                                     counts, "", "", "", ""])
+            if extra > 0:
+                item.setToolTip(3, "Processes sharing these connections: " + ", ".join(map(str, p.pids)))
             item.setData(0, ROLE, key)
             item.setData(1, ROLE, p)
             item.setToolTip(0, "\n".join(filter(None, [p.exe, p.cmdline] +
@@ -574,7 +593,9 @@ class Dashboard(QMainWindow):
             self._color(item, p.severity, blocked, p.has_new, any(a.muted for a in p.alerts))
             for c in conns:
                 ctags = (["New destination"] if c.new and not p.new else []) + \
-                        (["Trusted destination"] if c.raddr in self.trust.destinations else [])
+                        (["Trusted destination"] if c.raddr in self.trust.destinations else []) + \
+                        ([f"Shared with {', '.join(f'{n} ({pid})' for n, pid in c.shared[:2])}"]
+                         if c.shared and c.raddr else [])
                 child = QTreeWidgetItem(["", "; ".join(ctags + [self._alert_text(a) for a in c.alerts]),
                                          rate_text(c.up, c.down), "", "", c.proto, c.local, c.remote,
                                          hosts.get(c.raddr, ""), self._network_text(c), c.status, c.scope])
@@ -883,6 +904,38 @@ class Dashboard(QMainWindow):
         self.tick()
         self.populate()
 
+    def set_domain_age(self, enabled: bool):
+        self.ages.enabled = enabled
+        self.settings.setValue("domain_age", enabled)
+        self.tick()
+
+    def export_report(self):
+        folder = Path.home() / "Downloads"
+        name = time.strftime("netapp-monitor-report-%Y%m%d-%H%M.html")
+        path, _ = QFileDialog.getSaveFileName(self, "Export report", str((folder if folder.is_dir() else Path.home()) / name),
+                                              "HTML report (*.html);;JSON data (*.json)")
+        if not path:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            data = report.build(
+                self.procs, intel_summary=self.blocklist.summary(), dns_status=DNS_STATUS[self.dns.status],
+                history=self.history, cache=self.loader.cached, trust=self.trust, always=self.always,
+                blocked=[a["exe"] or a["name"] for a in self.blocked_apps if a["pids"]])
+            report.save(data, path)
+        except OSError as e:
+            QMessageBox.warning(self, "NetApp Monitor", f"Could not save the report: {e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        box = QMessageBox(QMessageBox.Information, "Report saved",
+                          f"Saved to {path}\n\nIt contains IP addresses, command lines and this computer's name; "
+                          "review it before sharing.", QMessageBox.Ok, self)
+        open_button = box.addButton("Open", QMessageBox.ActionRole)
+        box.exec()
+        if box.clickedButton() is open_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
     @staticmethod
     def open_url(url):
         QDesktopServices.openUrl(QUrl(url))
@@ -896,15 +949,23 @@ class Dashboard(QMainWindow):
         self.open_url(f"https://www.virustotal.com/gui/file/{digest}")
 
     def kill(self, proc):
+        # A merged row's processes share the same sockets; killing only one would leave the
+        # connection open in the others.
+        pids = proc.pids or [proc.pid]
+        which = f"pid {proc.pid}" if len(pids) == 1 else f"{len(pids)} processes: {', '.join(map(str, pids))}"
         answer = QMessageBox.question(
             self, "Kill process",
-            f"Send SIGTERM to {proc.name} (pid {proc.pid})?\n\n{proc.exe}\n{proc.cmdline[:300]}")
+            f"Send SIGTERM to {proc.name} ({which})?\n\n{proc.exe}\n{proc.cmdline[:300]}")
         if answer != QMessageBox.Yes:
             return
-        try:
-            os.kill(proc.pid, signal.SIGTERM)
-        except OSError as e:
-            QMessageBox.warning(self, "NetApp Monitor", f"Could not kill pid {proc.pid}: {e}")
+        failed = []
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError as e:
+                failed.append(f"pid {pid}: {e.strerror}")
+        if failed:
+            QMessageBox.warning(self, "NetApp Monitor", "Could not kill " + "; ".join(failed))
         self.tick()
 
     # --- window / tray --------------------------------------------------------
@@ -962,6 +1023,7 @@ def main(start_hidden: bool = False, reveal_pid: int | None = None) -> int:
     server.newConnection.connect(on_connection)
     app.aboutToQuit.connect(window.baseline.save)
     app.aboutToQuit.connect(window.history.close)
+    app.aboutToQuit.connect(window.ages.save)
     if reveal_pid is not None:
         window.reveal(reveal_pid or None)
     elif not (start_hidden and has_tray):

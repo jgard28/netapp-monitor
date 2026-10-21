@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 
 from .collector import HIGH, LOW, MEDIUM, Alert, Connection, Process, human_bytes
-from .dns import looks_generated
+from .dns import looks_generated, registrable
 
 SUSPICIOUS_PORTS = {
     1080: "SOCKS proxy",
@@ -37,6 +37,10 @@ TEMP_DIRS = ("/tmp/", "/var/tmp/", "/dev/shm/")
 # Programs whose job is DNS; anyone else talking DNS straight to the internet is bypassing the resolver.
 RESOLVERS = {"systemd-resolve", "systemd-resolved", "dnsmasq", "unbound", "named", "dnscrypt-proxy",
              "stubby", "tailscaled", "NetworkManager", "pihole-FTL", "coredns", "kresd"}
+
+# Domains registered more recently than this are flagged (medium under a week, low under a month).
+NEW_DOMAIN_DAYS = 30
+VERY_NEW_DOMAIN_DAYS = 7
 
 # Sending this much to the internet within UPLOAD_WINDOW seconds raises a (low) upload alert.
 UPLOAD_LIMIT = 200 * 1000 * 1000
@@ -192,6 +196,18 @@ class LanScanTracker:
         return None
 
 
+def new_domain_alert(domain: str, created: float | None, now: float | None = None) -> Alert | None:
+    if not created:
+        return None
+    days = ((time.time() if now is None else now) - created) / 86400
+    if days >= NEW_DOMAIN_DAYS:
+        return None
+    when = time.strftime("%b %d", time.localtime(created))
+    age = "today" if days < 1 else f"{int(days)} day{'s' if int(days) != 1 else ''} ago"
+    return Alert(MEDIUM if days < VERY_NEW_DOMAIN_DAYS else LOW,
+                 f"{registrable(domain)} was registered {age} ({when})", topic="new-domain")
+
+
 def unattributed_lookups(dns, blocklist, procs, window: float = 600) -> list[Process]:
     """Known-bad domains looked up recently that no current connection explains.
 
@@ -217,7 +233,8 @@ def unattributed_lookups(dns, blocklist, procs, window: float = 600) -> list[Pro
 
 def analyze(procs: list[Process], blocklist: dict | None = None,
             tracker: BeaconTracker | None = None, trust=None, baseline=None, integrity=None,
-            dns=None, geo=None, traffic=None, lan_scan: LanScanTracker | None = None) -> list[Process]:
+            dns=None, geo=None, traffic=None, lan_scan: LanScanTracker | None = None,
+            ages=None) -> list[Process]:
     """Attach alerts and "new" tags to every process and connection, then sort the worst first."""
     blocklist = {} if blocklist is None else blocklist  # an Intel with only domains is falsy
     for p in procs:
@@ -247,6 +264,10 @@ def analyze(procs: list[Process], blocklist: dict | None = None,
                                   topic="upload"))
         for c in p.connections:
             c.alerts = check_connection(c, blocklist)
+            if ages and c.domain and c.scope == "internet":
+                young = new_domain_alert(c.domain, ages.created(c.domain))
+                if young:
+                    c.alerts.append(young)
             if tracker and c.scope == "internet":
                 every = tracker.interval(p.exe or p.name, c.raddr, c.rport)
                 if every:

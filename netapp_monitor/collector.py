@@ -48,6 +48,7 @@ class Connection:
     domain: str = ""  # the name the app looked up to get this IP, if DNS was watched
     owner: object = None  # geo.Owner of the remote address, once the database is loaded
     device: str = ""  # the name you gave this local device, if any
+    shared: list = field(default_factory=list)  # other apps holding this same socket: [(name, pid)]
     sent: int = 0  # bytes so far (TCP only; the kernel keeps no per-socket count for UDP)
     received: int = 0
     up: float = 0.0  # bytes per second since the last snapshot
@@ -82,6 +83,7 @@ class Process:
     connections: list[Connection] = field(default_factory=list)
     alerts: list[Alert] = field(default_factory=list)
     new: bool = False  # first time this app reached the internet
+    pids: list[int] = field(default_factory=list)  # every process merged into this row (see merge_shared)
 
     @property
     def internet(self):
@@ -90,6 +92,10 @@ class Process:
     @property
     def local(self):
         return [c for c in self.connections if c.local_device]
+
+    @property
+    def socket_keys(self):
+        return frozenset((c.proto, c.laddr, c.lport, c.raddr, c.rport) for c in self.connections)
 
     def all_alerts(self):
         return self.alerts + [a for c in self.connections for a in c.alerts]
@@ -249,6 +255,60 @@ def _add(procs, pid, c):
         status="" if c.status == psutil.CONN_NONE else c.status,
         scope=classify_ip(raddr) if raddr else "listening",
     ))
+
+
+def merge_shared(procs: list[Process], parents: dict[int, int] | None = None) -> list[Process]:
+    """Fold processes of the same program that hold exactly the same sockets into one row.
+
+    A program's child processes inherit its sockets, so the per-process view lists the same
+    connections several times (a shell and its subshells, worker processes). The row keeps the
+    parent's PID, lists every PID in `pids`, and combines the alerts. Different programs sharing
+    a socket stay separate rows (that's how a reverse shell hides behind its parent), and each
+    connection notes who else holds it in `shared`.
+    """
+    if parents is None:
+        parents = {}
+        for p in procs:
+            if p.pid:
+                try:
+                    parents[p.pid] = psutil.Process(p.pid).ppid()
+                except psutil.Error:
+                    pass
+    groups: dict[tuple, list[Process]] = {}
+    for p in procs:
+        if p.pid is None or not p.connections:
+            groups[("solo", id(p))] = [p]
+            continue
+        groups.setdefault((p.exe or p.name, p.user, p.socket_keys), []).append(p)
+
+    merged = []
+    for group in groups.values():
+        pids = {p.pid for p in group}
+        # The representative is the one whose parent isn't also in the group.
+        roots = [p for p in group if parents.get(p.pid) not in pids] or group
+        head = min(roots, key=lambda p: p.pid or 0)
+        head.pids = sorted(pids - {None})
+        seen = {(a.message, a.severity) for a in head.alerts}
+        for p in group:
+            if p is head:
+                continue
+            for a in p.alerts:
+                if (a.message, a.severity) not in seen:
+                    seen.add((a.message, a.severity))
+                    head.alerts.append(a)
+            head.new = head.new or p.new
+        merged.append(head)
+
+    holders: dict[tuple, list[Process]] = {}
+    for p in merged:
+        for key in p.socket_keys:
+            holders.setdefault(key, []).append(p)
+    for p in merged:
+        for c in p.connections:
+            others = holders.get((c.proto, c.laddr, c.lport, c.raddr, c.rport), [])
+            c.shared = [(o.name, o.pid) for o in others if o is not p and o.pid]
+    merged.sort(key=lambda p: (-p.severity, -len(p.internet), p.name.lower()))
+    return merged
 
 
 def tcp_counters() -> dict[tuple, tuple[int, int]]:

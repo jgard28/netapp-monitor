@@ -11,6 +11,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 - **History**: a local 30-day timeline of every internet connection and alert, searchable by app, IP, domain or network
 - **Pop-up alerts** for new high and medium findings. They close themselves (20s high, 12s medium), can be dismissed by hand, and open the dashboard on that app when clicked. Bursts are grouped into one summary. Mute them from the tray menu.
 - **Block an app from the internet** with a right-click, either until it exits or **always** (every time the program starts, also after a reboot). A minimal **Blocked** page lists what's blocked, with one-click Unblock.
+- **Export report**: one click saves a standalone HTML page (or JSON) of current connections, alerts, program hashes and the last 24 hours of alerts, as evidence or to share with someone helping you investigate
 - **CLI / JSON** for a one-off check or scripting: `netapp-monitor --cli`
 
 ## What it flags
@@ -30,6 +31,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 | medium | Executable deleted or replaced on disk while running (also normal right after a package update, until the app restarts) |
 | low | Script interpreter (`python`, `perl`, `node`, …) talking to the internet |
 | low | Executable running from an unusual hidden directory |
+| medium / low | **Newly registered domain**: the app connected to a domain registered under 7 days ago (medium) or under 30 days ago (low); needs domain matching |
 | low | Random-looking domain (possible domain-generation malware) |
 | low | App does its own DNS straight to the internet, bypassing the system resolver |
 | low | App uploaded 200 MB or more to the internet in the last 10 minutes (possible data theft; also backups, sync, video calls) |
@@ -48,6 +50,18 @@ Click an app to open its **detail panel**. It shows:
 - **Traffic:** current upload/download rate and bytes on open connections.
 - **History:** destinations and alerts in the last 7 days, with a link to the History page.
 - **Its alerts,** each with an explanation, plus Block / Trust / Kill buttons.
+
+### Merged rows
+
+Child processes inherit their parent's sockets, so a shell and its subshells, or a program's worker processes, would each list the same connections. Processes of the same program holding exactly the same sockets are shown as one row, e.g. "bash (+1 process)", with every PID in the panel and the alerts combined. Kill acts on all of them, since killing only one would leave the connection open in the others. Different programs sharing a socket stay separate (that's how a reverse shell hides behind its parent), and the connection says "Shared with nc (1234)".
+
+### Domain age
+
+With domain matching on, each domain an app connects to is checked against its registry's public RDAP record (the modern WHOIS) to see when it was registered. Phishing, malware and C2 domains are usually days or weeks old; real services have usually existed for years. Only the registered name (`example.com`) is sent, directly to that TLD's registry as listed by IANA, and answers are cached in `~/.cache/netapp-monitor/domain-ages.json`, so each domain is asked about once. Some country domains (`.io`, `.de`, …) publish no RDAP data and are skipped. Turn it off from the tray menu (**Check how old domains are**).
+
+### Export report
+
+**Export…** on the Connections page (or **Export report…** in the tray menu) saves a standalone HTML page (light/dark aware) or JSON with: a summary, every flagged app with path, command line, PIDs, package, integrity, SHA-256, alerts with explanations and connections, the other apps online, alerts from the last 24 hours, and your blocked/trusted settings. From the terminal: `netapp-monitor --report report.html`. The report contains IP addresses, command lines and your computer's name, so review it before sharing.
 
 ### Local network
 
@@ -99,6 +113,7 @@ netapp-monitor --cli        # one-off grouped report in the terminal
 netapp-monitor --cli --lan             # connections to devices on your local network
 netapp-monitor --cli --all --resolve   # include LAN/loopback/listening, reverse-DNS remote IPs
 netapp-monitor --json --alerts         # flagged apps only, as JSON
+netapp-monitor --report report.html    # save a snapshot report (.html or .json)
 ```
 
 ## Trust and "New"

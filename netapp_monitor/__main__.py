@@ -15,9 +15,10 @@ def main() -> int:
     parser.add_argument("--alerts", action="store_true", help="only show flagged apps")
     parser.add_argument("--resolve", action="store_true", help="reverse-DNS remote IPs (CLI)")
     parser.add_argument("--offline", action="store_true", help="don't refresh threat-intel feeds (CLI)")
+    parser.add_argument("--report", metavar="FILE", help="save a report to FILE (.html or .json) and exit")
     args = parser.parse_args()
 
-    if args.cli or args.json:
+    if args.cli or args.json or args.report:
         from .cli import run
         return run(args)
     from .gui import main as gui_main

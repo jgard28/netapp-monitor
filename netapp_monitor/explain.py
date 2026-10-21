@@ -125,6 +125,14 @@ EXPLANATIONS = {
         "media or smart-home apps, or a backup tool walking several machines.",
         "Did you start a scan? If not, look at the app's Path, Package and Launched by rows, and "
         "block it while you investigate."),
+    "new-domain": Explanation(
+        "The app connected to a domain that was registered very recently.",
+        "Attackers register fresh domains for phishing, malware downloads and C2, use them for a few "
+        "days, then move on before blocklists catch up. Most real services have existed for years.",
+        "New products, marketing campaigns, link shorteners and some CDNs do use new domains, and a "
+        "site you just signed up for may be brand new.",
+        "Do you recognize the site? Is the app a browser (you may have just visited it) or something "
+        "that shouldn't be reaching new places? Look the domain up before trusting it."),
     "upload": Explanation(
         "The app uploaded a lot of data recently.",
         "Stealing files means sending them out, so a large unexplained upload is a classic sign of "

@@ -6,8 +6,9 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
-from . import intel
-from .collector import SEVERITY_NAMES, local_kind, severity_of, reverse_dns, snapshot, visible_connections
+from . import blockctl, intel, report
+from .collector import (SEVERITY_NAMES, local_kind, merge_shared, reverse_dns, severity_of, snapshot,
+                        visible_connections)
 from .detect import analyze
 from .geo import GeoDB
 from .memory import Trust
@@ -16,10 +17,32 @@ COLORS = {0: "", 1: "\033[33m", 2: "\033[38;5;208m", 3: "\033[31;1m"}
 DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
 
 
+def save_report(path, procs, blocklist, trust) -> int:
+    from .history import History
+    try:
+        history = History()
+    except Exception:  # sqlite errors: the report is still useful without the timeline
+        history = None
+    data = report.build(procs, intel_summary=blocklist.summary(), history=history, trust=trust,
+                        always=blockctl.always_blocked())
+    try:
+        report.save(data, path)
+    except OSError as e:
+        print(f"netapp-monitor: could not save the report: {e}", file=sys.stderr)
+        return 1
+    s = data["summary"]
+    print(f"Saved {path}: {s['apps']} apps, {s['flagged']} flagged, {len(data['recent_alerts'])} alerts in the last 24 h.")
+    print("It contains IP addresses, command lines and this computer's name; review it before sharing.")
+    return 0
+
+
 def run(args) -> int:
     blocklist = intel.load(update=not args.offline)
     geo = GeoDB(update=not args.offline, background=False)
-    procs = analyze(snapshot(), blocklist, trust=Trust(), geo=geo)
+    trust = Trust()
+    procs = analyze(snapshot(), blocklist, trust=trust, geo=geo)
+    if args.report:
+        return save_report(args.report, merge_shared(procs), blocklist, trust)
     rows = [(p, visible_connections(p, "all" if args.all else "local" if args.lan else "internet")) for p in procs]
     rows = [(p, conns) for p, conns in rows if conns or p.alerts]
     if args.alerts:
