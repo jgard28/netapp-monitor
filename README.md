@@ -4,6 +4,10 @@ A small Linux tray app that shows **every application's network connections**, g
 
 It's a threat-hunting dashboard, not a firewall. It never blocks anything on its own or nags you with prompts. It watches, scores and tells you what's worth a closer look.
 
+![NetApp Monitor: flagged apps first, click one for its details](docs/demo.gif)
+
+<sub>Demo data: the apps, IPs and alerts in these images are made up (see [Screenshots](#screenshots)).</sub>
+
 - **Tray icon** that changes color with the worst finding: green (clean), yellow (low), orange (medium), red (high)
 - **Dashboard** (click the icon, or run `netapp-monitor` again): processes sorted worst-first, each expandable into its connections, with reverse DNS, live upload/download rate, and who owns each remote IP (country flag and network, e.g. "🇩🇪 DE · Hetzner (rented server)")
 - **Three views:** **Internet** (the default, for spotting C2), **Local network** (what's talking to your media server, NAS, Proxmox box or printer, with names you can give each device) and **Everything** (also loopback, listening ports and broadcast traffic)
@@ -181,6 +185,16 @@ Uninstall with `sudo ./install-system.sh --remove`.
 scripts/demo-alerts.sh        # or: scripts/demo-alerts.sh 300
 ```
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Overview](docs/screenshots/overview.png) **Overview.** Flagged apps sort to the top and open up; everything else stays folded. | ![Detail panel](docs/screenshots/details.png) **Detail panel.** Click an app to see where it came from, who launched it and who it's talking to. |
+| ![Alert explanation](docs/screenshots/explanation.png) **What does this mean?** Every alert explains itself, including when it's harmless. | ![Local network](docs/screenshots/local-network.png) **Local network.** Your NAS, phone and servers, by the names you give them. |
+| ![Tiled half screen](docs/screenshots/tiled.png) **Tiled half screen.** On a narrow window the detail panel moves under the list. | |
+
+These are rendered from made-up data by `scripts/screenshots.py`, which runs the real dashboard offscreen with a throwaway home directory (no notifications, downloads or lookups). Re-run it after UI changes.
+
 ## Your own blocklist
 
 Put IPs or domains in `~/.config/netapp-monitor/blocklist.txt`, one per line. Text after `#` is shown as the reason (`203.0.113.9  # from the phishing mail`). The tray app picks up changes live.
@@ -196,6 +210,7 @@ Put IPs or domains in `~/.config/netapp-monitor/blocklist.txt`, one per line. Te
 
 ```sh
 python -m unittest discover -s tests
+python3 scripts/screenshots.py      # regenerate docs/screenshots/ and docs/demo.gif
 ```
 
 MIT licensed.
