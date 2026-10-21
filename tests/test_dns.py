@@ -34,6 +34,19 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(parse_result(reply), [("93.184.215.14", "www.example.com"),
                                                ("2606:2800:220:1:248:1893:25c8:1946", "www.example.com")])
 
+    def test_cname_follow_up_credits_original_name(self):
+        # Captured from systemd-resolved: the AAAA re-query for a CNAME target.
+        reply = {"state": "success",
+                 "question": [{"class": 1, "type": 28, "name": "pages.archlinux.org"}],
+                 "collectedQuestions": [{"class": 1, "type": 28, "name": "openpgpkey.archlinux.org"}],
+                 "answer": [{"rr": {"key": {"class": 1, "type": 28, "name": "pages.archlinux.org"},
+                                    "address": [42, 1, 4, 248, 2, 34, 23, 76, 0, 0, 0, 0, 0, 0, 0, 1]},
+                             "raw": "", "ifindex": 4}]}
+        self.assertEqual(parse_result(reply), [("2a01:4f8:222:174c::1", "openpgpkey.archlinux.org")])
+
+    def test_ready_message_ignored(self):
+        self.assertEqual(parse_result({"ready": True}), [])
+
     def test_failed_lookup_ignored(self):
         self.assertEqual(parse_result({"state": "rcode-failure", "question": [{"name": "x.com"}]}), [])
 

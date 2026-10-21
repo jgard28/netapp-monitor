@@ -28,7 +28,10 @@ def parse_result(params: dict) -> list[tuple[str, str]]:
     """
     if params.get("state") not in (None, "success"):
         return []
-    question = (params.get("question") or [{}])[0].get("name", "").rstrip(".").lower()
+    # When resolved follows a CNAME it re-asks for the target and lists the original question
+    # under "collectedQuestions"; the original is the name the app actually looked up.
+    asked = params.get("collectedQuestions") or params.get("question") or [{}]
+    question = asked[0].get("name", "").rstrip(".").lower()
     pairs = []
     for answer in params.get("answer") or []:
         rr = answer.get("rr") or {}
