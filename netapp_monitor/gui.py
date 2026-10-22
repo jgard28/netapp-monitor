@@ -1066,6 +1066,7 @@ class Dashboard(QMainWindow):
         if self.helper and self.helper.state() != QProcess.NotRunning:
             return
         self.helper = QProcess(self)
+        self.helper.setProperty("action", args[0])
         self.helper.finished.connect(self.helper_done)
         self.helper.start("pkexec", [blockctl.INSTALLED_PATH, *args])
 
@@ -1077,6 +1078,8 @@ class Dashboard(QMainWindow):
             QMessageBox.warning(self, "NetApp Monitor", err or f"The helper failed (exit code {code}).")
         self.tick()
         self.populate()
+        if code == 0 and self.helper.property("action") == "block":
+            self.mascot.react("block")  # after the refresh, so a "cheer" for alerts going away doesn't cut it short
 
     def set_domain_age(self, enabled: bool):
         self.ages.enabled = enabled

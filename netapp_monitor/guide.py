@@ -8,6 +8,7 @@ from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
+from shiboken6 import isValid
 
 from .collector import HIGH, LOW, MEDIUM, SEVERITY_COLORS
 from .mascot import ALARMED, CLEAR, DOZING, LEARNING, MASCOTS, WATCHFUL, WORRIED, MascotWidget, Pose
@@ -30,6 +31,9 @@ MOODS = [
      "A <b>high</b> alert (red): check now, e.g. a known malware server or a possible reverse shell. "
      "Click the mascot to jump straight to it."),
     (WORRIED, MEDIUM, "startle", "Startled", "An alert just got more serious."),
+    (ALARMED, HIGH, "block", "Blocking",
+     "You blocked an app (right-click → <i>Block internet access</i>) and it worked: Tux swings his sword, the "
+     "octopus snips the app's cable. It never blocks anything on its own."),
     (CLEAR, 0, "cheer", "Cheering", "Everything is clear again."),
     (DOZING, 0, None, "Dozing",
      "Nothing flagged for 10 minutes. It's still watching: the tray icon stays awake."),
@@ -44,9 +48,10 @@ DEMO = [
     (2, lambda w: w.set_state(LOW, False)),
     (3, lambda w: w.set_state(MEDIUM, False)),
     (4, lambda w: w.set_state(HIGH, False)),
-    (6, lambda w: w.set_state(0, False)),
-    (7, lambda w: w.doze_now()),
-    (8, lambda w: w.poke()),
+    (6, lambda w: w.react("block")),
+    (7, lambda w: w.set_state(0, False)),
+    (8, lambda w: w.doze_now()),
+    (9, lambda w: w.poke()),
 ]
 
 COLUMNS = [
@@ -244,7 +249,8 @@ class GuidePage(QScrollArea):
         self.show_mascot(self.dash.mascot_key or self.actor.mascot.key)
 
     def hideEvent(self, event):  # noqa: N802 (Qt naming)
-        self.stop_demo()
+        if isValid(self.play):  # also called while the app shuts down, after the buttons are gone
+            self.stop_demo()
         super().hideEvent(event)
 
     def toggle_demo(self):

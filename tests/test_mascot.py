@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QColor, QImage, QPainter  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
-from netapp_monitor.collector import HIGH, LOW, MEDIUM  # noqa: E402
+from netapp_monitor.collector import HIGH, LOW, MEDIUM, SEVERITY_COLORS  # noqa: E402
 from netapp_monitor.mascot import (ALARMED, CLEAR, DOZE_AFTER, DOZING, LEARNING, MASCOTS, REACTIONS,  # noqa: E402
                                    WATCHFUL, WORRIED, MascotWidget, Pose, mood_for, reaction_for)
 
@@ -58,8 +58,20 @@ class DrawTest(unittest.TestCase):
 
     def test_every_mascot_has_something_to_say(self):
         for mascot in MASCOTS.values():
-            for situation in (CLEAR, LEARNING, WATCHFUL, WORRIED, ALARMED, DOZING, "cheer", "poke", "wake"):
+            # a startle speaks the new mood's line, so it has none of its own
+            for situation in (CLEAR, LEARNING, WATCHFUL, WORRIED, ALARMED, DOZING, *set(REACTIONS) - {"startle"}):
                 self.assertTrue(mascot.quip(situation), (mascot.key, situation))
+
+    def test_tux_carries_the_alert_color_on_his_shield(self):
+        tux = MASCOTS["tux"]
+        for severity in range(4):
+            img = QImage(100, 100, QImage.Format_ARGB32)
+            img.fill(0)
+            p = QPainter(img)
+            tux.draw(p, Pose(mood_for(severity), severity))
+            p.end()
+            x, y = [(20, 80), (14, 64), (44, 62), (44, 54)][severity]  # at his side, then in front, then raised
+            self.assertEqual(QColor(img.pixel(x, y)).name(), SEVERITY_COLORS[severity], severity)
 
     def test_tray_icon_shows_the_alert_color(self):
         for mascot in MASCOTS.values():

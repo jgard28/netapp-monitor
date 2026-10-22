@@ -20,7 +20,7 @@ from PySide6.QtWidgets import QToolTip, QWidget
 from .collector import HIGH, LOW, MEDIUM, SEVERITY_COLORS
 
 CLEAR, WATCHFUL, WORRIED, ALARMED, LEARNING, DOZING = "clear", "watchful", "worried", "alarmed", "learning", "dozing"
-REACTIONS = {"startle": 0.8, "cheer": 1.4, "poke": 0.6, "wake": 1.0}  # name -> seconds
+REACTIONS = {"startle": 0.8, "cheer": 1.4, "poke": 0.6, "wake": 1.0, "block": 1.3}  # name -> seconds
 DOZE_AFTER = 10 * 60  # seconds of nothing flagged before it nods off
 SAY_MS = 4000  # how long a speech bubble stays up
 FPS = 30
@@ -59,6 +59,7 @@ class Pose:
     look: float = 0.0  # -1 left .. 1 right
     reaction: str | None = None
     progress: float = 0.0  # 0..1 through the reaction
+    props: bool = True  # hand-held accessories; the tray icon leaves them out and shows a big badge instead
 
     def bump(self) -> float:
         """A 0..1..0 hump over the reaction, for jumps and squishes."""
@@ -98,7 +99,7 @@ class Mascot:
         p = QPainter(pix)
         p.setRenderHint(QPainter.Antialiasing)
         p.scale(size / 100, size / 100)
-        self.draw(p, Pose(mood_for(severity), severity))
+        self.draw(p, Pose(mood_for(severity), severity, props=False))
         self.badge(p, severity)
         p.end()
         return QIcon(pix)
@@ -164,6 +165,77 @@ def breathe(p: QPainter, t: float, base_y: float):
     p.translate(-50, -base_y)
 
 
+def shield(p: QPainter, x: float, y: float, severity: int, scale: float = 1.0, angle: float = 0.0,
+           gleam: float | None = None):
+    """A heater shield in the alert color: a check mark when all is clear, "!" otherwise.
+    `gleam` (0..1) sweeps a glint across it."""
+    p.save()
+    p.translate(x, y)
+    p.rotate(angle)
+    p.scale(scale, scale)
+    path = QPainterPath(QPointF(-13, -14))
+    path.quadTo(QPointF(0, -18), QPointF(13, -14))
+    path.cubicTo(QPointF(13, 2), QPointF(8, 11), QPointF(0, 17))
+    path.cubicTo(QPointF(-8, 11), QPointF(-13, 2), QPointF(-13, -14))
+    color = QColor(SEVERITY_COLORS[severity])
+    p.setPen(QPen(color.darker(170), 2))
+    p.setBrush(color)
+    p.drawPath(path)
+    if gleam is not None:
+        p.save()
+        p.setClipPath(path)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 110))
+        x0 = -30 + 60 * gleam
+        p.drawPolygon([QPointF(x0, -20), QPointF(x0 + 6, -20), QPointF(x0 - 6, 20), QPointF(x0 - 12, 20)])
+        p.restore()
+    p.setPen(QPen(QColor("#ffffff"), 3.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    if severity:
+        p.drawLine(QPointF(0, -8), QPointF(0, 2))
+        p.drawPoint(QPointF(0, 8))
+    else:
+        p.drawPolyline([QPointF(-6, -1), QPointF(-1.5, 5), QPointF(7, -7)])
+    p.restore()
+
+
+def sword(p: QPainter, x: float, y: float, angle: float, length: float = 34):
+    """A sword held at (x, y), blade up when angle is 0."""
+    p.save()
+    p.translate(x, y)
+    p.rotate(angle)
+    p.setPen(QPen(QColor("#57606a"), 1))
+    p.setBrush(QColor("#d0d7de"))
+    blade = QPainterPath(QPointF(-2.5, -4))
+    for point in ((-2.5, -length + 5), (0, -length), (2.5, -length + 5), (2.5, -4)):
+        blade.lineTo(*point)
+    blade.closeSubpath()
+    p.drawPath(blade)
+    p.setBrush(QColor("#d4a72c"))
+    p.drawRoundedRect(QRectF(-8, -5.5, 16, 3.5), 1.5, 1.5)  # crossguard
+    p.setBrush(QColor("#6e4b2a"))
+    p.drawRect(QRectF(-1.8, -2, 3.6, 7))  # grip
+    p.setBrush(QColor("#d4a72c"))
+    p.drawEllipse(QPointF(0, 6.5), 2.5, 2.5)  # pommel
+    p.restore()
+
+
+def swing(progress: float) -> float:
+    """0 at rest .. 1 wound up overhead .. then a fast cut forward (negative), held, for the block reaction."""
+    if progress < 0.3:
+        return progress / 0.3
+    if progress < 0.45:
+        return 1 - 2 * (progress - 0.3) / 0.15
+    return -1.0
+
+
+def spark(p: QPainter, x: float, y: float, size: float):
+    p.setPen(QPen(QColor("#e3b341"), 2, Qt.SolidLine, Qt.RoundCap))
+    for a in range(0, 360, 45):
+        r = size * (1 if a % 90 == 0 else 0.6)
+        p.drawLine(QPointF(x, y), QPointF(x + r * math.cos(math.radians(a)), y + r * math.sin(math.radians(a))))
+
+
 def alarm(p: QPainter, x: float, y: float):
     p.setPen(QPen(QColor(SEVERITY_COLORS[HIGH]), 4, Qt.SolidLine, Qt.RoundCap))
     p.drawLine(QPointF(x, y), QPointF(x, y + 9))
@@ -189,6 +261,7 @@ class Octopus(Mascot):
         "cheer": ("Phew! Back to calm waters.", "All clear. Tentacles untangled."),
         "poke": ("Hey! I'm juggling here.", "Boop. Nothing to report.", "Still eight arms, still all clear."),
         "wake": ("Huh? I'm up, I'm up!", "Wasn't sleeping. Just resting my eyes. All of them."),
+        "block": ("Snip! That one's unplugged.", "Cable cut. It's not going anywhere online."),
     }
 
     def badge(self, p, severity):
@@ -213,7 +286,8 @@ class Octopus(Mascot):
             p.scale(1 + 0.08 * bump * squish, 1 - 0.1 * bump * squish)
             p.translate(-50, -80)
 
-        juggling = pose.mood in (CLEAR, WATCHFUL) and pose.reaction != "startle"
+        blocking = pose.reaction == "block"
+        juggling = pose.mood in (CLEAR, WATCHFUL) and pose.reaction not in ("startle", "block")
         speed = 0.45 if pose.mood == WATCHFUL else 0.7
         hands = self.hands(pose, juggling, speed)
 
@@ -244,7 +318,9 @@ class Octopus(Mascot):
         brows(p, 50, 31, 8, pose)
         self.mouth(p, pose)
 
-        if juggling:
+        if blocking:
+            self.snip(p, hands, pose.progress)
+        elif juggling:
             for i, color in enumerate(self.CABLES):
                 u = (t * speed + i / 3) % 1.0
                 self.plug(p, *self.arc(u, hands), color)
@@ -263,6 +339,8 @@ class Octopus(Mascot):
     @staticmethod
     def hands(pose, juggling, speed):
         t = pose.t
+        if pose.reaction == "block":
+            return (22, 62), (80, 26)  # one cable held up high, to be snipped
         if pose.mood == ALARMED or pose.reaction == "cheer":
             wave = math.sin(t * 12) * 3
             return (16, 18 + wave), (84, 18 - wave)
@@ -270,6 +348,24 @@ class Octopus(Mascot):
             dip = math.sin(t * speed * 2 * math.pi * 1.5)
             return (18, 60 + 3 * dip), (82, 60 - 3 * dip)
         return (24, 62), (76, 62)
+
+    def snip(self, p, hands, progress):
+        """The block reaction: it holds up the app's cable and snips it; the loose end drops away."""
+        (lx, ly), (rx, ry) = hands
+        for i, color in enumerate(self.CABLES[1:]):
+            self.plug(p, lx + i * 4, ly - 4, -1.57, color)
+        cut = progress >= 0.35
+        fall = 30 * max(0.0, progress - 0.35) / 0.65
+        p.setPen(QPen(QColor(self.CABLES[0]), 3, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(rx, ry + 4), QPointF(rx, ry + 16 if cut else ry + 34))
+        if cut:
+            loose = QColor(self.CABLES[0])
+            loose.setAlphaF(max(0.0, 1 - fall / 30))
+            p.setPen(QPen(loose, 3, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(rx + fall * 0.2, ry + 20 + fall), QPointF(rx + fall * 0.3, ry + 34 + fall))
+        if 0.3 <= progress < 0.6:
+            spark(p, rx, ry + 18, 6)
+        self.plug(p, rx, ry, -1.57, self.CABLES[0])
 
     @staticmethod
     def arc(u, hands):
@@ -339,6 +435,7 @@ class Tux(Mascot):
         "cheer": ("All clear again. Closing the ticket.", "Resolved. Back to compiling."),
         "poke": ("Yes? Everything's fine.", "*waddle waddle* Nothing flagged.", "Have you tried turning it off and on? Kidding, all clear."),
         "wake": ("Wha—? Back online.", "Resuming from suspend…"),
+        "block": ("Blocked. None shall pass.", "Access denied. As it should be."),
     }
 
     def draw(self, p, pose):
@@ -386,29 +483,116 @@ class Tux(Mascot):
         p.drawEllipse(QPointF(50, 38), 7, 3.2)
         if pose.mood == ALARMED or pose.reaction == "startle":
             p.drawEllipse(QPointF(50, 42.5), 5.5, 2.8)
+        if pose.props:
+            self.accessories(p, pose)
         if pose.mood == ALARMED:
             alarm(p, 80, 4)
         elif pose.mood == DOZING:
             snooze(p, 67, 24, t)
         p.restore()
 
+    def badge(self, p, severity):
+        """In the tray, a big shield in the alert color stands in for the one he holds."""
+        shield(p, 74, 70, severity, 1.3)
+
+    def accessories(self, p, pose):
+        """His shield carries the alert color; a magnifier while learning, a nightcap while dozing,
+        and a sword for the block reaction."""
+        x, y, scale, angle = self.shield_spot(pose)
+        if pose.reaction == "startle":
+            y -= 5 * pose.bump()
+        gleam = None
+        if pose.mood == CLEAR and pose.t and not pose.reaction and pose.t % 7 < 0.6:
+            gleam = (pose.t % 7) / 0.6  # a glint now and then: his version of juggling
+        shield(p, x, y, pose.severity, scale, angle, gleam)
+        if pose.mood == LEARNING:
+            self.magnifier(p, 82 + pose.look * 3, 50)
+        if pose.mood == DOZING:
+            self.nightcap(p)
+        if pose.reaction == "block":
+            self.strike(p, pose.progress)
+
+    @staticmethod
+    def shield_spot(pose):
+        """Where the shield is (x, y, scale, angle): at his side when calm, in front when worried,
+        raised when alarmed, overhead when cheering, at his feet when dozing."""
+        if pose.reaction == "cheer":
+            return 21, 23, 0.75, -15  # low enough to stay in view at the top of the cheer hop
+        if pose.mood == DOZING:
+            return 14, 88, 0.6, -80
+        if pose.mood == ALARMED:
+            return 50, 60, 1.05, 0
+        if pose.mood == WORRIED:
+            return 50, 68, 0.95, 0
+        if pose.mood == WATCHFUL:
+            return 19, 66, 0.85, -6
+        return 20, 74, 0.8, -8
+
+    @staticmethod
+    def magnifier(p, x, y):
+        p.setPen(QPen(QColor("#57606a"), 3, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(x + 4, y + 4.5), QPointF(87, 64))
+        p.setPen(QPen(QColor("#57606a"), 2.2))
+        p.setBrush(QColor(173, 214, 255, 110))
+        p.drawEllipse(QPointF(x, y), 6, 6)
+        p.setPen(QPen(QColor(255, 255, 255, 180), 1.4, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(x - 3, y - 1), QPointF(x - 1, y - 3.5))
+
+    @staticmethod
+    def nightcap(p):
+        cone = QPainterPath(QPointF(35, 19))
+        cone.quadTo(QPointF(44, -2), QPointF(76, 22))  # floppy tip drooping to the side
+        cone.quadTo(QPointF(68, 10), QPointF(64, 14))
+        cone.closeSubpath()
+        p.setPen(QPen(QColor("#1f4f8f"), 1))
+        p.setBrush(QColor("#58a6ff"))
+        p.drawPath(cone)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#f6f8fa"))
+        p.save()
+        p.translate(49, 17)
+        p.rotate(-12)
+        p.drawRoundedRect(QRectF(-15, -2.5, 30, 5), 2.5, 2.5)
+        p.restore()
+        p.drawEllipse(QPointF(77, 25), 3.5, 3.5)
+
+    @staticmethod
+    def strike(p, progress):
+        """The block reaction: wind up, one quick chop, then hold. A swoosh trails the chop."""
+        s = swing(progress)
+        angle = 35 - 50 * s if s >= 0 else 35 + 75 * -s  # 35 rest, -15 wound up, 110 after the chop
+        hx, hy = 70, 60
+        if 0.3 <= progress < 0.7:
+            fade = 1 - (progress - 0.3) / 0.4
+            p.setPen(QPen(QColor(255, 255, 255, int(150 * fade)), 2.5, Qt.SolidLine, Qt.RoundCap))
+            p.setBrush(Qt.NoBrush)
+            p.drawArc(QRectF(hx - 30, hy - 30, 60, 60), (90 + 15) * 16, -(min(angle, 110) + 15) * 16)
+        sword(p, hx, hy, angle, 30)
+        p.setPen(QPen(QColor(OUTLINE), 1))
+        p.setBrush(QColor("#1b1f24"))
+        p.drawEllipse(QPointF(hx, hy + 1), 4.5, 3.5)  # the flipper gripping it
+
     @staticmethod
     def flippers(pose):
-        """Flipper angles (degrees from hanging down): up when alarmed, flapping when cheering,
-        a wave now and then while idle."""
+        """Flipper angles (degrees from hanging down, outward): (shield side, free side)."""
         t = pose.t
         if pose.mood == ALARMED:
-            return 150 + math.sin(t * 14) * 8, 150 - math.sin(t * 14) * 8
+            return -15, 150 + math.sin(t * 14) * 8
         if pose.reaction == "cheer":
-            flap = 60 + 50 * abs(math.sin(pose.progress * math.pi * 3))
-            return flap, flap
+            return 150, 60 + 50 * abs(math.sin(pose.progress * math.pi * 3))
+        if pose.reaction == "block":
+            return (-15 if pose.mood == WORRIED else 20), -15  # sword hand in front of him
         if pose.mood == WORRIED:
-            return 5, 5  # held in close
+            return -15, 5  # shield held in front
         if pose.mood == DOZING:
             return 12, 12
         if pose.reaction == "wake":
             stretch = 130 * math.sin(math.pi * pose.progress)
             return max(20, stretch), max(20, stretch)
+        if pose.mood == LEARNING:
+            return 20, 45  # holding the magnifier
+        if pose.mood == WATCHFUL:
+            return 35, 20
         wave = 0.0
         phase = t % 12
         if pose.mood == CLEAR and phase > 10:
