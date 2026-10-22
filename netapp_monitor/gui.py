@@ -31,6 +31,7 @@ from .domainage import DomainAges
 from .explain import explain
 from .geo import GeoDB
 from .history import History
+from .mascot import MASCOTS, MascotWidget
 from .memory import Baseline, DeviceNames, Trust
 from .notifier import Notifier
 from .panel import DetailPanel
@@ -159,6 +160,12 @@ class Dashboard(QMainWindow):
         # Sends domain names to registries, so it's off until you turn it on.
         self.ages = DomainAges(enabled=self.settings.value("domain_age", False, type=bool))
         self.popups_enabled = self.settings.value("popups", True, type=bool)
+        # Just for fun, so off until you pick one; "" means no mascot.
+        self.mascot_key = self.settings.value("mascot", "", type=str)
+        self.mascot_tray = self.settings.value("mascot_tray", True, type=bool)
+        self.mascot_idle = self.settings.value("mascot_idle", True, type=bool)
+        self.mascot_chatty = self.settings.value("mascot_chatty", True, type=bool)
+        self.worst = 0
         self.theme = ThemeFollower(QApplication.instance(), self.settings.value("follow_theme", True, type=bool))
         self.first_seen: dict[tuple, float] = {}  # connection key -> when it was first seen
         self.settings_refreshed = 0.0
@@ -189,6 +196,10 @@ class Dashboard(QMainWindow):
             switcher.addWidget(b)
         group.idClicked.connect(self.switch_page)
         switcher.addStretch(1)
+        self.mascot = MascotWidget()
+        self.mascot.clicked.connect(self.mascot_clicked)
+        self.mascot.set_mascot(self.mascot_key, self.mascot_idle, self.mascot_chatty)
+        switcher.addWidget(self.mascot)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._connections_page())
@@ -480,9 +491,13 @@ class Dashboard(QMainWindow):
                  f"intel: {self.blocklist.summary() or 'loading…'}"]
         self.status.setText(" · ".join(parts))  # shortened with "…" when the window is narrow
         self.status.setToolTip("\n".join(parts))
+        self.worst = worst
+        summary = self.tray_summary(worst, flagged, new, internet, up, down, learning)
+        self.mascot.set_state(worst, bool(learning),
+                              summary + ("\n\nClick to see the most serious alert" if flagged else ""))
         if self.tray:
-            self.tray.setIcon(tray_icon(worst))
-            self.tray.setToolTip(self.tray_summary(worst, flagged, new, internet, up, down, learning))
+            self.update_tray_icon()
+            self.tray.setToolTip(summary)
             self.notify()
         if self.isVisible() and self.live.isChecked():
             self.populate()
@@ -1053,6 +1068,40 @@ class Dashboard(QMainWindow):
             self.popups.setChecked(enabled)
         self.settings_refreshed = 0.0
         self.populate()
+
+    def set_mascot(self, key: str):
+        self.mascot_key = key
+        self.settings.setValue("mascot", key)
+        self.mascot.set_mascot(key, self.mascot_idle, self.mascot_chatty)
+        self.update_tray_icon()
+
+    def set_mascot_tray(self, enabled: bool):
+        self.mascot_tray = enabled
+        self.settings.setValue("mascot_tray", enabled)
+        self.update_tray_icon()
+
+    def set_mascot_idle(self, enabled: bool):
+        self.mascot_idle = enabled
+        self.settings.setValue("mascot_idle", enabled)
+        self.mascot.set_mascot(self.mascot_key, enabled, self.mascot_chatty)
+
+    def set_mascot_chatty(self, enabled: bool):
+        self.mascot_chatty = enabled
+        self.settings.setValue("mascot_chatty", enabled)
+        self.mascot.set_mascot(self.mascot_key, self.mascot_idle, enabled)
+
+    def mascot_clicked(self):
+        flagged = [p for p in self.procs if p.severity]
+        if flagged:
+            self.reveal(max(flagged, key=lambda p: p.severity).pid)
+        else:
+            self.mascot.poke()
+
+    def update_tray_icon(self):
+        if not self.tray:
+            return
+        mascot = MASCOTS.get(self.mascot_key)
+        self.tray.setIcon(mascot.icon(self.worst) if mascot and self.mascot_tray else tray_icon(self.worst))
 
     def uses_own_dns(self, proc) -> bool:
         return own_dns(proc, self.first_seen, self.dns.watching_since)

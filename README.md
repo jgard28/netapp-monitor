@@ -19,6 +19,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 - **CLI / JSON** for a one-off check or scripting: `netapp-monitor --cli`
 - **Fits a tiled window:** on a narrow window (e.g. half a screen in Hyprland) the detail panel moves under the list and the status line shortens itself. Right-click any list header to choose its columns; widths and choices are remembered.
 - **Matches your Omarchy theme** and switches along when you run `omarchy theme set`. Alert colors never change with the theme. Turn it off under Settings → Appearance; on other desktops it uses the system's colors.
+- **An optional mascot** (off by default): a small octopus juggling network cables, or Tux. It sits next to the tabs and can replace the tray icon. It relaxes while all is clear, gets worried at a medium alert and alarmed at a high one, and cheers when things clear up. After 10 quiet minutes it dozes off (the tray icon stays awake). Each has its own voice: a line for its mood in the tooltip, and a quip when something changes. Click it to jump to the most serious alert, or to wake it up. Choose one, or none, under Settings → Mascot.
 
 ## What it flags
 
@@ -134,6 +135,7 @@ State lives in `~/.local/state/netapp-monitor/` (`trust.json`, `baseline.json`, 
 The **Settings** page (also in the tray menu) keeps every option in one place, each with a plain explanation:
 
 - **Alerts:** pop-up alerts on or off.
+- **Mascot:** none (the default), the octopus or Tux; whether it replaces the tray icon; whether it moves while nothing is happening (off: it only reacts when the alert level changes); and whether it makes quips.
 - **Lookups that leave your computer:** off unless you turn them on, each saying exactly what it sends. Today that's the domain age check. It also lists what's always on and why nothing about you is sent there (threat-intel and IP-owner downloads, and lookups you click yourself).
 - **System features:** the status of domain matching, blocking and the always-block service, with the exact command (and a Copy button) to set up whatever isn't set up yet.
 
@@ -213,4 +215,6 @@ python -m unittest discover -s tests
 python3 scripts/screenshots.py      # regenerate docs/screenshots/ and docs/demo.gif
 ```
 
-MIT licensed.
+To add a mascot, subclass `Mascot` in `netapp_monitor/mascot.py`, draw it in `draw()` (a 100×100 box, posed by mood, time and reaction), give it `QUIPS` (lines per mood and per reaction) and add it to `MASCOTS`. It then shows up in Settings.
+
+MIT licensed. Tux was created by Larry Ewing (lewing@isc.tamu.edu) with The GIMP; the app draws its own version of him.
