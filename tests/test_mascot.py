@@ -111,6 +111,16 @@ class WidgetTest(unittest.TestCase):
         self.assertEqual((w.mood, w.reaction), (WORRIED, "startle"))
         self.assertIsNone(w.calm_since)
 
+    def test_tray_line_stays_awake(self):
+        w = MascotWidget()
+        w.set_mascot("octopus")
+        w.set_state(0, True)  # learning
+        w.calm_since -= DOZE_AFTER
+        w.set_state(0, False)  # learning just ended after a long quiet spell: straight to dozing
+        self.assertEqual(w.mood, DOZING)
+        self.assertIn(w.awake_quip, MASCOTS["octopus"].QUIPS[CLEAR])
+        self.assertIn(w.quip, MASCOTS["octopus"].QUIPS[DOZING])
+
     def test_quiet_mascot_leaves_quips_out_of_the_tooltip(self):
         w = MascotWidget()
         w.set_mascot("tux", chatty=False)

@@ -334,6 +334,13 @@ class SettingsPage(QScrollArea):
         outer.addStretch(1)
         self.setWidget(wrapper)
 
+    def show_mascot(self, key):
+        """Reflect a mascot chosen elsewhere (the tray menu) without choosing it again."""
+        self.mascot.combo.blockSignals(True)
+        self.mascot.combo.setCurrentIndex(max(0, self.mascot.combo.findData(key)))
+        self.mascot.combo.blockSignals(False)
+        self._mascot_chosen(key)
+
     def _mascot_chosen(self, key):
         chosen = MASCOTS.get(key)
         self.mascot_tray.switch.setEnabled(chosen is not None)

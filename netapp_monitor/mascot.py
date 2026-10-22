@@ -423,6 +423,8 @@ class MascotWidget(QWidget):
         self.calm_since: float | None = None  # when the last alert went away
         self.mood = CLEAR
         self.quip = ""
+        self.awake_mood = CLEAR  # the tray never shows it asleep, so it speaks for the mood it would be in awake
+        self.awake_quip = ""
         self.summary = ""
         self.reaction: str | None = None
         self.reaction_start = 0.0
@@ -437,6 +439,8 @@ class MascotWidget(QWidget):
         self.mascot = MASCOTS.get(key or "")
         self.idle, self.chatty = idle, chatty
         self.quip = self.mascot.quip(self.mood) if self.mascot else ""
+        self.awake_mood = CLEAR if self.mood == DOZING else self.mood
+        self.awake_quip = self.mascot.quip(self.awake_mood) if self.mascot else ""
         self._tooltip()
         self.setVisible(self.mascot is not None)
         self._run()
@@ -483,6 +487,10 @@ class MascotWidget(QWidget):
             return
         self.mood = mood
         self.quip = self.mascot.quip(mood) if self.mascot else ""
+        awake = CLEAR if mood == DOZING else mood
+        if awake != self.awake_mood:
+            self.awake_mood = awake
+            self.awake_quip = self.quip if mood != DOZING else (self.mascot.quip(CLEAR) if self.mascot else "")
         self.timer.setInterval(100 if mood == DOZING else 1000 // FPS)  # breathing doesn't need 30 fps
 
     def _tooltip(self):

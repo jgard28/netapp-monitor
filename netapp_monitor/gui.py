@@ -11,7 +11,7 @@ from pathlib import Path
 
 import psutil
 from PySide6.QtCore import QProcess, QSettings, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPainter, QPen,
+from PySide6.QtGui import (QActionGroup, QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPainter, QPen,
                            QPixmap, QShortcut)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -221,6 +221,8 @@ class Dashboard(QMainWindow):
                            "QPushButton:flat:checked { border-bottom: 2px solid palette(link); font-weight: bold; }")
 
         self.tray = QSystemTrayIcon(tray_icon(0), self) if has_tray else None
+        self.tray_text = ""
+        self.mascot_actions: list = []  # the tray menu's mascot choices, kept in step with Settings
         if self.tray:
             menu = QMenu(self)
             menu.addAction("Show dashboard", self.show_window)
@@ -228,6 +230,16 @@ class Dashboard(QMainWindow):
             self.popups.setCheckable(True)
             self.popups.setChecked(self.popups_enabled)
             self.popups.toggled.connect(self.set_popups)
+            mascots = menu.addMenu("Mascot")
+            choices = QActionGroup(mascots)
+            for key, title, icon in [("", "None", None)] + [(m.key, m.title, m.icon(0)) for m in MASCOTS.values()]:
+                action = mascots.addAction(icon, title) if icon else mascots.addAction(title)
+                action.setData(key)
+                action.setCheckable(True)
+                action.setChecked(key == self.mascot_key)
+                action.triggered.connect(lambda _=False, k=key: self.set_mascot(k))
+                choices.addAction(action)
+                self.mascot_actions.append(action)
             menu.addAction("Refresh threat intel", self.load_intel)
             menu.addAction("Export report…", self.export_report)
             menu.addAction("Settings…", lambda: (self.switch_page(PAGE_SETTINGS), self.show_window()))
@@ -495,9 +507,9 @@ class Dashboard(QMainWindow):
         summary = self.tray_summary(worst, flagged, new, internet, up, down, learning)
         self.mascot.set_state(worst, bool(learning),
                               summary + ("\n\nClick to see the most serious alert" if flagged else ""))
+        self.tray_text = summary
         if self.tray:
-            self.update_tray_icon()
-            self.tray.setToolTip(summary)
+            self.update_tray()
             self.notify()
         if self.isVisible() and self.live.isChecked():
             self.populate()
@@ -1073,12 +1085,15 @@ class Dashboard(QMainWindow):
         self.mascot_key = key
         self.settings.setValue("mascot", key)
         self.mascot.set_mascot(key, self.mascot_idle, self.mascot_chatty)
-        self.update_tray_icon()
+        for action in self.mascot_actions:  # chosen in Settings: check it in the tray menu, and vice versa
+            action.setChecked(action.data() == key)
+        self.settings_page.show_mascot(key)
+        self.update_tray()
 
     def set_mascot_tray(self, enabled: bool):
         self.mascot_tray = enabled
         self.settings.setValue("mascot_tray", enabled)
-        self.update_tray_icon()
+        self.update_tray()
 
     def set_mascot_idle(self, enabled: bool):
         self.mascot_idle = enabled
@@ -1089,6 +1104,7 @@ class Dashboard(QMainWindow):
         self.mascot_chatty = enabled
         self.settings.setValue("mascot_chatty", enabled)
         self.mascot.set_mascot(self.mascot_key, self.mascot_idle, enabled)
+        self.update_tray()
 
     def mascot_clicked(self):
         flagged = [p for p in self.procs if p.severity]
@@ -1097,11 +1113,15 @@ class Dashboard(QMainWindow):
         else:
             self.mascot.poke()
 
-    def update_tray_icon(self):
+    def update_tray(self):
+        """The tray icon, and its hover text led by the mascot's line when the mascot lives in the tray.
+        Panels draw that text themselves, so a line is all the mascot can bring to it."""
         if not self.tray:
             return
-        mascot = MASCOTS.get(self.mascot_key)
-        self.tray.setIcon(mascot.icon(self.worst) if mascot and self.mascot_tray else tray_icon(self.worst))
+        mascot = MASCOTS.get(self.mascot_key) if self.mascot_tray else None
+        self.tray.setIcon(mascot.icon(self.worst) if mascot else tray_icon(self.worst))
+        quip = self.mascot.awake_quip if mascot and self.mascot_chatty else ""
+        self.tray.setToolTip("\n\n".join(filter(None, (quip, self.tray_text))))
 
     def uses_own_dns(self, proc) -> bool:
         return own_dns(proc, self.first_seen, self.dns.watching_since)
