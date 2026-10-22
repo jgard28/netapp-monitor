@@ -30,6 +30,7 @@ from .dns import DnsWatcher, own_dns
 from .domainage import DomainAges
 from .explain import explain
 from .geo import GeoDB
+from .guide import GuidePage
 from .history import History
 from .mascot import MASCOTS, MascotWidget
 from .memory import Baseline, DeviceNames, Trust
@@ -48,7 +49,7 @@ NEW_COLOR = "#58a6ff"
 COLUMNS = ["Application / connection", "Alerts", "Traffic", "PID", "User", "Proto", "Local", "Remote", "Host",
            "Network", "State", "Scope"]
 ROLE = Qt.UserRole
-PAGE_CONNECTIONS, PAGE_HISTORY, PAGE_BLOCKED, PAGE_TRUSTED, PAGE_SETTINGS = range(5)
+PAGE_CONNECTIONS, PAGE_HISTORY, PAGE_BLOCKED, PAGE_TRUSTED, PAGE_SETTINGS, PAGE_GUIDE = range(6)
 VIEW_LABELS = {"internet": "Internet", "local": "Local network", "all": "Everything"}
 VIEW_TIPS = {"internet": "Connections to the internet (plus anything flagged)",
              "local": "Connections to other devices on your network: media servers, NAS, Proxmox, printers…",
@@ -186,7 +187,12 @@ class Dashboard(QMainWindow):
         self.block_tab = QPushButton("Blocked", checkable=True)
         self.trust_tab = QPushButton("Trusted", checkable=True)
         self.settings_tab = QPushButton("Settings", checkable=True)
-        self.tabs = (self.conn_tab, self.history_tab, self.block_tab, self.trust_tab, self.settings_tab)
+        # A dot on the Guide tab until it's been opened once, so new users find it
+        self.guide_seen = self.settings.value("guide_seen", False, type=bool)
+        self.guide_tab = QPushButton("Guide" if self.guide_seen else "Guide ●", checkable=True)
+        self.guide_tab.setToolTip("What everything means, and a demo of the mascot")
+        self.tabs = (self.conn_tab, self.history_tab, self.block_tab, self.trust_tab, self.settings_tab,
+                     self.guide_tab)
         group = QButtonGroup(self)
         group.setExclusive(True)
         switcher = QHBoxLayout()
@@ -208,6 +214,8 @@ class Dashboard(QMainWindow):
         self.pages.addWidget(self._trusted_page())
         self.settings_page = SettingsPage(self, SETUP_SCRIPT)
         self.pages.addWidget(self.settings_page)
+        self.guide_page = GuidePage(self, NEW_COLOR, BLOCKED_COLOR)
+        self.pages.addWidget(self.guide_page)
 
         self.status = ElidedLabel()
         layout = QVBoxLayout()
@@ -243,6 +251,7 @@ class Dashboard(QMainWindow):
             menu.addAction("Refresh threat intel", self.load_intel)
             menu.addAction("Export report…", self.export_report)
             menu.addAction("Settings…", lambda: (self.switch_page(PAGE_SETTINGS), self.show_window()))
+            menu.addAction("Guide…", lambda: (self.switch_page(PAGE_GUIDE), self.show_window()))
             menu.addSeparator()
             menu.addAction("Quit", QApplication.quit)
             self.tray.setContextMenu(menu)
@@ -614,6 +623,12 @@ class Dashboard(QMainWindow):
             self.populate_history()
         if index == PAGE_SETTINGS:
             self.settings_refreshed = 0.0
+        if index == PAGE_GUIDE:
+            self.guide_page.sync()
+            if not self.guide_seen:
+                self.guide_seen = True
+                self.settings.setValue("guide_seen", True)
+                self.guide_tab.setText("Guide")
         self.populate()
 
     def show_history(self, needle: str):
@@ -622,8 +637,8 @@ class Dashboard(QMainWindow):
 
     def populate(self):
         page = self.pages.currentIndex()
-        if page == PAGE_HISTORY:
-            return  # refreshed on demand, so the list doesn't jump while you read it
+        if page in (PAGE_HISTORY, PAGE_GUIDE):
+            return  # History is refreshed on demand, so the list doesn't jump while you read it
         if page == PAGE_BLOCKED:
             self.populate_blocked()
             return

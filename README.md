@@ -19,6 +19,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 - **CLI / JSON** for a one-off check or scripting: `netapp-monitor --cli`
 - **Fits a tiled window:** on a narrow window (e.g. half a screen in Hyprland) the detail panel moves under the list and the status line shortens itself. Right-click any list header to choose its columns; widths and choices are remembered.
 - **Matches your Omarchy theme** and switches along when you run `omarchy theme set`. Alert colors never change with the theme. Turn it off under Settings → Appearance; on other desktops it uses the system's colors.
+- **A Guide page** for new users (also in the tray menu): what the colors, columns and actions mean, a few common questions, and a table of the mascot's moods with a **Play demo** button that runs it through each one. The tab has a dot until it's been opened once.
 - **An optional mascot** (off by default): a small octopus juggling network cables, or Tux. It sits next to the tabs and can replace the tray icon. It relaxes while all is clear, gets worried at a medium alert and alarmed at a high one, and cheers when things clear up. After 10 quiet minutes it dozes off (the tray icon stays awake). Each has its own voice: a line for its mood in the tooltip, and a quip when something changes. Click it to jump to the most serious alert, or to wake it up. In the tray, its line leads the hover text. Choose one, or none, under Settings → Mascot or from the tray menu's **Mascot** submenu.
 
 ## What it flags

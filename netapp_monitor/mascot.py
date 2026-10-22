@@ -68,6 +68,7 @@ class Pose:
 class Mascot:
     key = ""
     title = ""
+    called = ""  # how it introduces itself: "I'm …"
     credit = ""
     # Its personality: lines per mood and per reaction. Alarmed lines stay useful: say where to look.
     QUIPS: dict[str, tuple[str, ...]] = {}
@@ -77,6 +78,17 @@ class Mascot:
 
     def quip(self, situation: str) -> str:
         return random.choice(self.QUIPS.get(situation) or ("",))
+
+    def picture(self, pose: Pose, size: int = 64) -> QPixmap:
+        """A still frame, e.g. for the Guide's table of moods."""
+        pix = QPixmap(size, size)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.scale(size / 100, size / 100)
+        self.draw(p, pose)
+        p.end()
+        return pix
 
     def icon(self, severity: int, size: int = 64) -> QIcon:
         """A still frame for the tray, always awake so the tray never looks like monitoring stopped.
@@ -162,6 +174,7 @@ class Octopus(Mascot):
     """A small octopus juggling network cables. Its body takes the alert color."""
     key = "octopus"
     title = "Octopus"
+    called = "the octopus"
     CABLES = ("#58a6ff", "#e3b341", "#a371f7")  # ethernet blue, yellow, purple
     THROW = 52  # how high the cables fly
     QUIPS = {
@@ -312,6 +325,7 @@ class Tux(Mascot):
     """Tux, the Linux penguin (our own drawing of him)."""
     key = "tux"
     title = "Tux"
+    called = "Tux"
     credit = "Tux was created by Larry Ewing (lewing@isc.tamu.edu) with The GIMP."
     ORANGE = QColor("#f5a623")
     QUIPS = {
@@ -411,9 +425,9 @@ class MascotWidget(QWidget):
 
     clicked = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, size: QSize = QSize(56, 48)):
         super().__init__(parent)
-        self.setFixedSize(QSize(56, 48))
+        self.setFixedSize(size)
         self.setCursor(Qt.PointingHandCursor)
         self.mascot: Mascot | None = None
         self.idle = True
@@ -460,6 +474,17 @@ class MascotWidget(QWidget):
             self.react(reaction)
         self._tooltip()
         self.update()
+
+    def reset(self):
+        """Forget what it has seen, so the next state isn't a change to react to (the Guide's demo)."""
+        self.severity = self.calm_since = self.reaction = None
+        self._set_mood(CLEAR)
+        self.update()
+
+    def doze_now(self):
+        """Skip the quiet spell and nod off (the Guide's demo)."""
+        self.calm_since = time.monotonic() - DOZE_AFTER
+        self.set_state(0, False, self.summary)
 
     def poke(self):
         """Clicked with nothing to show: wakes it up if it's dozing, otherwise a playful squish."""
