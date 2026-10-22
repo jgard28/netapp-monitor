@@ -11,7 +11,7 @@ from pathlib import Path
 
 import psutil
 from PySide6.QtCore import QProcess, QSettings, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPainter, QPen,
+from PySide6.QtGui import (QActionGroup, QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPainter, QPen,
                            QPixmap, QShortcut)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -30,7 +30,9 @@ from .dns import DnsWatcher, own_dns
 from .domainage import DomainAges
 from .explain import explain
 from .geo import GeoDB
+from .guide import GuidePage
 from .history import History
+from .mascot import MASCOTS, MascotWidget
 from .memory import Baseline, DeviceNames, Trust
 from .notifier import Notifier
 from .panel import DetailPanel
@@ -47,7 +49,7 @@ NEW_COLOR = "#58a6ff"
 COLUMNS = ["Application / connection", "Alerts", "Traffic", "PID", "User", "Proto", "Local", "Remote", "Host",
            "Network", "State", "Scope"]
 ROLE = Qt.UserRole
-PAGE_CONNECTIONS, PAGE_HISTORY, PAGE_BLOCKED, PAGE_TRUSTED, PAGE_SETTINGS = range(5)
+PAGE_CONNECTIONS, PAGE_HISTORY, PAGE_BLOCKED, PAGE_TRUSTED, PAGE_SETTINGS, PAGE_GUIDE = range(6)
 VIEW_LABELS = {"internet": "Internet", "local": "Local network", "all": "Everything"}
 VIEW_TIPS = {"internet": "Connections to the internet (plus anything flagged)",
              "local": "Connections to other devices on your network: media servers, NAS, Proxmox, printers…",
@@ -159,6 +161,12 @@ class Dashboard(QMainWindow):
         # Sends domain names to registries, so it's off until you turn it on.
         self.ages = DomainAges(enabled=self.settings.value("domain_age", False, type=bool))
         self.popups_enabled = self.settings.value("popups", True, type=bool)
+        # Just for fun, so off until you pick one; "" means no mascot.
+        self.mascot_key = self.settings.value("mascot", "", type=str)
+        self.mascot_tray = self.settings.value("mascot_tray", True, type=bool)
+        self.mascot_idle = self.settings.value("mascot_idle", True, type=bool)
+        self.mascot_chatty = self.settings.value("mascot_chatty", True, type=bool)
+        self.worst = 0
         self.theme = ThemeFollower(QApplication.instance(), self.settings.value("follow_theme", True, type=bool))
         self.first_seen: dict[tuple, float] = {}  # connection key -> when it was first seen
         self.settings_refreshed = 0.0
@@ -179,7 +187,12 @@ class Dashboard(QMainWindow):
         self.block_tab = QPushButton("Blocked", checkable=True)
         self.trust_tab = QPushButton("Trusted", checkable=True)
         self.settings_tab = QPushButton("Settings", checkable=True)
-        self.tabs = (self.conn_tab, self.history_tab, self.block_tab, self.trust_tab, self.settings_tab)
+        # A dot on the Guide tab until it's been opened once, so new users find it
+        self.guide_seen = self.settings.value("guide_seen", False, type=bool)
+        self.guide_tab = QPushButton("Guide" if self.guide_seen else "Guide ●", checkable=True)
+        self.guide_tab.setToolTip("What everything means, and a demo of the mascot")
+        self.tabs = (self.conn_tab, self.history_tab, self.block_tab, self.trust_tab, self.settings_tab,
+                     self.guide_tab)
         group = QButtonGroup(self)
         group.setExclusive(True)
         switcher = QHBoxLayout()
@@ -189,6 +202,10 @@ class Dashboard(QMainWindow):
             switcher.addWidget(b)
         group.idClicked.connect(self.switch_page)
         switcher.addStretch(1)
+        self.mascot = MascotWidget()
+        self.mascot.clicked.connect(self.mascot_clicked)
+        self.mascot.set_mascot(self.mascot_key, self.mascot_idle, self.mascot_chatty)
+        switcher.addWidget(self.mascot)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._connections_page())
@@ -197,6 +214,8 @@ class Dashboard(QMainWindow):
         self.pages.addWidget(self._trusted_page())
         self.settings_page = SettingsPage(self, SETUP_SCRIPT)
         self.pages.addWidget(self.settings_page)
+        self.guide_page = GuidePage(self, NEW_COLOR, BLOCKED_COLOR)
+        self.pages.addWidget(self.guide_page)
 
         self.status = ElidedLabel()
         layout = QVBoxLayout()
@@ -210,6 +229,8 @@ class Dashboard(QMainWindow):
                            "QPushButton:flat:checked { border-bottom: 2px solid palette(link); font-weight: bold; }")
 
         self.tray = QSystemTrayIcon(tray_icon(0), self) if has_tray else None
+        self.tray_text = ""
+        self.mascot_actions: list = []  # the tray menu's mascot choices, kept in step with Settings
         if self.tray:
             menu = QMenu(self)
             menu.addAction("Show dashboard", self.show_window)
@@ -217,9 +238,20 @@ class Dashboard(QMainWindow):
             self.popups.setCheckable(True)
             self.popups.setChecked(self.popups_enabled)
             self.popups.toggled.connect(self.set_popups)
+            mascots = menu.addMenu("Mascot")
+            choices = QActionGroup(mascots)
+            for key, title, icon in [("", "None", None)] + [(m.key, m.title, m.icon(0)) for m in MASCOTS.values()]:
+                action = mascots.addAction(icon, title) if icon else mascots.addAction(title)
+                action.setData(key)
+                action.setCheckable(True)
+                action.setChecked(key == self.mascot_key)
+                action.triggered.connect(lambda _=False, k=key: self.set_mascot(k))
+                choices.addAction(action)
+                self.mascot_actions.append(action)
             menu.addAction("Refresh threat intel", self.load_intel)
             menu.addAction("Export report…", self.export_report)
             menu.addAction("Settings…", lambda: (self.switch_page(PAGE_SETTINGS), self.show_window()))
+            menu.addAction("Guide…", lambda: (self.switch_page(PAGE_GUIDE), self.show_window()))
             menu.addSeparator()
             menu.addAction("Quit", QApplication.quit)
             self.tray.setContextMenu(menu)
@@ -480,9 +512,13 @@ class Dashboard(QMainWindow):
                  f"intel: {self.blocklist.summary() or 'loading…'}"]
         self.status.setText(" · ".join(parts))  # shortened with "…" when the window is narrow
         self.status.setToolTip("\n".join(parts))
+        self.worst = worst
+        summary = self.tray_summary(worst, flagged, new, internet, up, down, learning)
+        self.mascot.set_state(worst, bool(learning),
+                              summary + ("\n\nClick to see the most serious alert" if flagged else ""))
+        self.tray_text = summary
         if self.tray:
-            self.tray.setIcon(tray_icon(worst))
-            self.tray.setToolTip(self.tray_summary(worst, flagged, new, internet, up, down, learning))
+            self.update_tray()
             self.notify()
         if self.isVisible() and self.live.isChecked():
             self.populate()
@@ -587,6 +623,12 @@ class Dashboard(QMainWindow):
             self.populate_history()
         if index == PAGE_SETTINGS:
             self.settings_refreshed = 0.0
+        if index == PAGE_GUIDE:
+            self.guide_page.sync()
+            if not self.guide_seen:
+                self.guide_seen = True
+                self.settings.setValue("guide_seen", True)
+                self.guide_tab.setText("Guide")
         self.populate()
 
     def show_history(self, needle: str):
@@ -595,8 +637,8 @@ class Dashboard(QMainWindow):
 
     def populate(self):
         page = self.pages.currentIndex()
-        if page == PAGE_HISTORY:
-            return  # refreshed on demand, so the list doesn't jump while you read it
+        if page in (PAGE_HISTORY, PAGE_GUIDE):
+            return  # History is refreshed on demand, so the list doesn't jump while you read it
         if page == PAGE_BLOCKED:
             self.populate_blocked()
             return
@@ -1024,6 +1066,7 @@ class Dashboard(QMainWindow):
         if self.helper and self.helper.state() != QProcess.NotRunning:
             return
         self.helper = QProcess(self)
+        self.helper.setProperty("action", args[0])
         self.helper.finished.connect(self.helper_done)
         self.helper.start("pkexec", [blockctl.INSTALLED_PATH, *args])
 
@@ -1035,6 +1078,8 @@ class Dashboard(QMainWindow):
             QMessageBox.warning(self, "NetApp Monitor", err or f"The helper failed (exit code {code}).")
         self.tick()
         self.populate()
+        if code == 0 and self.helper.property("action") == "block":
+            self.mascot.react("block")  # after the refresh, so a "cheer" for alerts going away doesn't cut it short
 
     def set_domain_age(self, enabled: bool):
         self.ages.enabled = enabled
@@ -1053,6 +1098,48 @@ class Dashboard(QMainWindow):
             self.popups.setChecked(enabled)
         self.settings_refreshed = 0.0
         self.populate()
+
+    def set_mascot(self, key: str):
+        self.mascot_key = key
+        self.settings.setValue("mascot", key)
+        self.mascot.set_mascot(key, self.mascot_idle, self.mascot_chatty)
+        for action in self.mascot_actions:  # chosen in Settings: check it in the tray menu, and vice versa
+            action.setChecked(action.data() == key)
+        self.settings_page.show_mascot(key)
+        self.update_tray()
+
+    def set_mascot_tray(self, enabled: bool):
+        self.mascot_tray = enabled
+        self.settings.setValue("mascot_tray", enabled)
+        self.update_tray()
+
+    def set_mascot_idle(self, enabled: bool):
+        self.mascot_idle = enabled
+        self.settings.setValue("mascot_idle", enabled)
+        self.mascot.set_mascot(self.mascot_key, enabled, self.mascot_chatty)
+
+    def set_mascot_chatty(self, enabled: bool):
+        self.mascot_chatty = enabled
+        self.settings.setValue("mascot_chatty", enabled)
+        self.mascot.set_mascot(self.mascot_key, self.mascot_idle, enabled)
+        self.update_tray()
+
+    def mascot_clicked(self):
+        flagged = [p for p in self.procs if p.severity]
+        if flagged:
+            self.reveal(max(flagged, key=lambda p: p.severity).pid)
+        else:
+            self.mascot.poke()
+
+    def update_tray(self):
+        """The tray icon, and its hover text led by the mascot's line when the mascot lives in the tray.
+        Panels draw that text themselves, so a line is all the mascot can bring to it."""
+        if not self.tray:
+            return
+        mascot = MASCOTS.get(self.mascot_key) if self.mascot_tray else None
+        self.tray.setIcon(mascot.icon(self.worst) if mascot else tray_icon(self.worst))
+        quip = self.mascot.awake_quip if mascot and self.mascot_chatty else ""
+        self.tray.setToolTip("\n\n".join(filter(None, (quip, self.tray_text))))
 
     def uses_own_dns(self, proc) -> bool:
         return own_dns(proc, self.first_seen, self.dns.watching_since)

@@ -8,10 +8,11 @@ import html
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
-    QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QAbstractButton, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from . import blockctl
+from .mascot import MASCOTS
 
 OK_COLOR, OFF_COLOR, WARN_COLOR, MUTED_COLOR = "#3fb950", "#8b949e", "#d29922", "#8b949e"
 
@@ -129,6 +130,39 @@ class SettingRow(QFrame):
         self.note.setVisible(bool(text))
 
 
+class ChoiceRow(QFrame):
+    """Title and explanation on the left, a drop-down on the right. Emits the chosen option's key."""
+
+    chosen = Signal(str)
+
+    def __init__(self, title, description, options, current):
+        super().__init__()
+        self.combo = QComboBox()
+        self.combo.setAccessibleName(title)
+        for key, label, icon in options:
+            self.combo.addItem(icon, label, key) if icon else self.combo.addItem(label, key)
+        self.combo.setCurrentIndex(max(0, self.combo.findData(current)))
+        self.combo.currentIndexChanged.connect(lambda i: self.chosen.emit(self.combo.itemData(i)))
+        self.title = _label(html.escape(title), bold=True)
+        self.description = _label(description, muted=True)
+        self.note = _label(muted=True)
+        self.note.hide()
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        text.addWidget(self.title)
+        text.addWidget(self.description)
+        text.addWidget(self.note)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 6, 0, 6)
+        row.addLayout(text, 1)
+        row.addSpacing(16)
+        row.addWidget(self.combo, 0, Qt.AlignTop)
+
+    def set_note(self, text):
+        self.note.setText(text)
+        self.note.setVisible(bool(text))
+
+
 class FeatureRow(QFrame):
     """A system feature: name, a status dot and line, what it does, and how to set it up."""
 
@@ -224,6 +258,37 @@ class SettingsPage(QScrollArea):
         appearance.addWidget(self.follow_theme)
         layout.addLayout(appearance)
 
+        mascot = section("Mascot")
+        self.mascot = ChoiceRow(
+            "Choose a mascot",
+            "A little companion next to the tabs that reacts to what the monitor sees: relaxed while all is "
+            "clear, worried at a medium alert, alarmed at a high one, dozing after 10 quiet minutes. Click it "
+            "to jump to the most serious alert. Just for fun: everything it shows is also in the list and the "
+            "tray color.",
+            [("", "None", None)] + [(m.key, m.title, m.icon(0)) for m in MASCOTS.values()], dash.mascot_key)
+        self.mascot.chosen.connect(dash.set_mascot)
+        self.mascot.chosen.connect(self._mascot_chosen)
+        self.mascot_tray = SettingRow(
+            "Show it in the tray",
+            "Use the mascot as the tray icon instead of the radar dot. It keeps the same alert colors.",
+            dash.mascot_tray)
+        self.mascot_tray.toggled.connect(dash.set_mascot_tray)
+        self.mascot_idle = SettingRow(
+            "Idle animations",
+            "Blinks, looks around and juggles while nothing is happening. Off: it only moves when the alert "
+            "level changes.", dash.mascot_idle)
+        self.mascot_idle.toggled.connect(dash.set_mascot_idle)
+        self.mascot_chatty = SettingRow(
+            "Quips",
+            "Says something in its own voice when the alert level changes or you click it (only while the "
+            "window is in front), and leads its tooltip with a line for its mood. Off: it keeps quiet.",
+            dash.mascot_chatty)
+        self.mascot_chatty.toggled.connect(dash.set_mascot_chatty)
+        for row in (self.mascot, self.mascot_tray, self.mascot_idle, self.mascot_chatty):
+            mascot.addWidget(row)
+        layout.addLayout(mascot)
+        self._mascot_chosen(dash.mascot_key)
+
         privacy = section("Lookups that leave your computer",
                           "Off unless you turn them on. Each one says exactly what it sends.")
         self.domain_age = SettingRow(
@@ -268,6 +333,20 @@ class SettingsPage(QScrollArea):
         outer.addWidget(body)
         outer.addStretch(1)
         self.setWidget(wrapper)
+
+    def show_mascot(self, key):
+        """Reflect a mascot chosen elsewhere (the tray menu) without choosing it again."""
+        self.mascot.combo.blockSignals(True)
+        self.mascot.combo.setCurrentIndex(max(0, self.mascot.combo.findData(key)))
+        self.mascot.combo.blockSignals(False)
+        self._mascot_chosen(key)
+
+    def _mascot_chosen(self, key):
+        chosen = MASCOTS.get(key)
+        self.mascot_tray.switch.setEnabled(chosen is not None)
+        self.mascot_idle.switch.setEnabled(chosen is not None)
+        self.mascot_chatty.switch.setEnabled(chosen is not None)
+        self.mascot.set_note(html.escape(chosen.credit) if chosen else "")
 
     def refresh(self):
         d, script = self.dash, self.script
