@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Render the README screenshots and demo GIF from made-up data.
+"""Render the README screenshots, demo GIF and mascot pictures from made-up data.
 
 Nothing here looks at your machine: the dashboard is fed a fixed set of fictional apps and
 connections (documentation IP ranges, invented paths), runs offscreen with a throwaway home
 directory, sends no notifications and downloads nothing. Re-run it after UI changes:
 
-    python3 scripts/screenshots.py          # writes docs/screenshots/*.png and docs/demo.gif
+    python3 scripts/screenshots.py          # writes docs/screenshots/*.png, docs/demo.gif and docs/mascot/
 
 Needs Pillow (python-pillow) besides the app's own dependencies.
 """
 from __future__ import annotations
 
 import atexit
+import math
 import os
 import shutil
 import sys
@@ -48,12 +49,13 @@ theme.write_text(THEME.read_text() if THEME.exists() else TOKYO_NIGHT)
 sys.path.insert(0, str(ROOT))
 
 from PIL import Image  # noqa: E402
-from PySide6.QtCore import QBuffer, QObject, QPoint, QPointF, Qt, Signal  # noqa: E402
-from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF  # noqa: E402
+from PySide6.QtCore import QBuffer, QObject, QPoint, QPointF, QRectF, Qt, Signal  # noqa: E402
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QScrollArea  # noqa: E402
 
-from netapp_monitor import gui, panel  # noqa: E402
+from netapp_monitor import gui, guide, panel  # noqa: E402
+from netapp_monitor.mascot import ALARMED, CLEAR, DOZING, LEARNING, MASCOTS, REACTIONS, Pose  # noqa: E402
 from netapp_monitor.collector import HIGH, LOW, MEDIUM, Alert, Connection, Process  # noqa: E402
 from netapp_monitor.geo import Owner  # noqa: E402
 
@@ -210,6 +212,88 @@ def to_image(pix) -> Image.Image:
     return Image.open(BytesIO(bytes(buf.data()))).convert("RGB")
 
 
+# The mascot GIFs: (row in guide.MOODS, seconds, short caption). The same story as the Guide's demo.
+MASCOT_STORY = [(0, 3.0, "All clear: nothing flagged"), (1, 2.5, "Learning what's normal (first 30 min)"),
+                (2, 2.2, "Low alert: often harmless"), (3, 2.2, "Medium alert: worth a look"),
+                (4, 2.5, "High alert: check now"), (6, 1.8, "You blocked the app"),
+                (7, 2.0, "All clear again"), (8, 3.0, "10 quiet minutes: still watching"),
+                (9, 1.6, "Clicked: it wakes up")]
+MASCOT_FPS = 10
+STILL_TIME = {CLEAR: 1.3, LEARNING: 1.0, ALARMED: 0.4, DOZING: 1.0}  # moments that show off each pose
+STILL_PROGRESS = {"block": 0.42, "cheer": 0.15}
+
+
+def slug(name: str) -> str:
+    return name.lower().replace(" ", "-")
+
+
+def qimage_to_pil(img: QImage, mode="RGBA") -> Image.Image:
+    buf = QBuffer()
+    buf.open(QBuffer.ReadWrite)
+    img.save(buf, "PNG")
+    return Image.open(BytesIO(bytes(buf.data()))).convert(mode)
+
+
+def mascot_frame(m, pose: Pose, caption: str, title: str) -> Image.Image:
+    img = QImage(280, 236, QImage.Format_ARGB32)
+    img.fill(QColor("#1a1b26"))  # the Tokyo Night background of the other screenshots
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.save()
+    p.translate(55, 6)
+    p.scale(1.7, 1.7)
+    m.draw(p, pose)
+    p.restore()
+    font = QFont()
+    font.setPixelSize(15)
+    font.setBold(True)
+    p.setFont(font)
+    p.setPen(QColor("#c0caf5"))
+    p.drawText(QRectF(0, 182, 280, 22), Qt.AlignCenter, title)
+    font.setBold(False)
+    font.setPixelSize(13)
+    p.setFont(font)
+    p.setPen(QColor("#a9b1d6"))
+    p.drawText(QRectF(0, 204, 280, 22), Qt.AlignCenter, caption)
+    p.end()
+    return qimage_to_pil(img, "RGB")
+
+
+def mascots():
+    """docs/mascot/: a still of every pose for the README's table, and a GIF of each mascot's moods."""
+    out = OUT / "mascot"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    for key, m in MASCOTS.items():
+        for mood, severity, reaction, name, _meaning in guide.MOODS:
+            pose = Pose(mood, severity, STILL_TIME.get(mood, 0.5), 0.0, 0.0, reaction,
+                        STILL_PROGRESS.get(reaction, 0.5))
+            qimage_to_pil(m.picture(pose, 192).toImage()).save(out / f"{key}-{slug(name)}.png", optimize=True)
+
+        frames, n = [], 0
+        for row, seconds, caption in MASCOT_STORY:
+            mood, severity, reaction, name, _meaning = guide.MOODS[row]
+            if row in (2, 3, 4):
+                reaction = "startle"  # what it does when an alert gets more serious
+            for i in range(round(seconds * MASCOT_FPS)):
+                t, elapsed = n / MASCOT_FPS, i / MASCOT_FPS
+                n += 1
+                active = reaction if reaction and elapsed < REACTIONS[reaction] else None
+                pose = Pose(mood, severity, t, 1.0 if n % 31 in (15, 16) else 0.0,  # blink, never on frame 1
+                            math.sin(t * 1.5) if mood == LEARNING else 0.0,
+                            active, elapsed / REACTIONS[reaction] if active else 0.0)
+                frames.append(mascot_frame(m, pose, caption, name))
+        sample = Image.new("RGB", (280, 236 * len(MASCOT_STORY)))
+        step = len(frames) // len(MASCOT_STORY)
+        for i in range(len(MASCOT_STORY)):
+            sample.paste(frames[i * step + step // 2], (0, 236 * i))
+        palette = sample.quantize(colors=255, method=Image.Quantize.MEDIANCUT)
+        gif = [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in frames]
+        gif[0].save(out / f"{key}.gif", save_all=True, append_images=gif[1:], duration=1000 // MASCOT_FPS,
+                    loop=0, optimize=True)
+
+
 def main():
     patch()
     app = QApplication(sys.argv)
@@ -295,13 +379,24 @@ def main():
     click_row("system-updater")
     grab().save(str(shots / "tiled.png"))
 
+    # 7. The Guide, hosted by Tux, partway through its demo.
+    d.set_mascot("tux")
+    d.resize(1100, 1180)
+    d.switch_page(gui.PAGE_GUIDE)
+    d.guide_page.toggle_demo()
+    for _ in range(4):
+        d.guide_page.next_step()  # the high alert
+    grab().save(str(shots / "guide.png"))
+    d.guide_page.stop_demo()
+    mascots()
+
     w = 1080
     images = [im.resize((w, im.height * w // im.width), Image.Resampling.LANCZOS) for im, _ in frames]
     palette = images[1].quantize(colors=255, method=Image.Quantize.MEDIANCUT)  # one with the panel's colors too
     gif = [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in images]
     gif[0].save(OUT / "demo.gif", save_all=True, append_images=gif[1:], duration=[ms for _, ms in frames],
                 loop=0, optimize=True)
-    for f in sorted(shots.iterdir()) + [OUT / "demo.gif"]:
+    for f in sorted(shots.iterdir()) + [OUT / "demo.gif"] + sorted((OUT / "mascot").iterdir()):
         print(f"{f.relative_to(ROOT)}  {f.stat().st_size // 1024} KB")
 
 

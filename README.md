@@ -20,7 +20,7 @@ It's a threat-hunting dashboard, not a firewall. It never blocks anything on its
 - **Fits a tiled window:** on a narrow window (e.g. half a screen in Hyprland) the detail panel moves under the list and the status line shortens itself. Right-click any list header to choose its columns; widths and choices are remembered.
 - **Matches your Omarchy theme** and switches along when you run `omarchy theme set`. Alert colors never change with the theme. Turn it off under Settings → Appearance; on other desktops it uses the system's colors.
 - **A Guide page** for new users (also in the tray menu): what the colors, columns and actions mean, a few common questions, and a table of the mascot's moods with a **Play demo** button that runs it through each one. The tab has a dot until it's been opened once.
-- **An optional mascot** (off by default): a small octopus juggling network cables, or Tux with a shield in the alert color (at his side when calm, raised at a high alert). It sits next to the tabs and can replace the tray icon. It relaxes while all is clear, gets worried at a medium alert and alarmed at a high one, and cheers when things clear up. When you block an app, it shows the block went through: Tux swings his sword, the octopus snips the app's cable. After 10 quiet minutes it dozes off (the tray icon stays awake). Each has its own voice: a line for its mood in the tooltip, and a quip when something changes. Click it to jump to the most serious alert, or to wake it up. In the tray, its line leads the hover text. Choose one, or none, under Settings → Mascot or from the tray menu's **Mascot** submenu.
+- **An optional mascot** (off by default): a small octopus juggling network cables, or Tux with a shield in the alert color (at his side when calm, raised at a high alert). It sits next to the tabs and can replace the tray icon. It relaxes while all is clear, gets worried at a medium alert and alarmed at a high one, and cheers when things clear up. When you block an app, it shows the block went through: Tux swings his sword, the octopus snips the app's cable. After 10 quiet minutes it dozes off (the tray icon stays awake). Each has its own voice: a line for its mood in the tooltip, and a quip when something changes. Click it to jump to the most serious alert, or to wake it up. In the tray, its line leads the hover text. Choose one, or none, under Settings → Mascot or from the tray menu's **Mascot** submenu. See [The mascot](#the-mascot) for what each mood looks like.
 
 ## What it flags
 
@@ -194,9 +194,38 @@ scripts/demo-alerts.sh        # or: scripts/demo-alerts.sh 300
 |---|---|
 | ![Overview](docs/screenshots/overview.png) **Overview.** Flagged apps sort to the top and open up; everything else stays folded. | ![Detail panel](docs/screenshots/details.png) **Detail panel.** Click an app to see where it came from, who launched it and who it's talking to. |
 | ![Alert explanation](docs/screenshots/explanation.png) **What does this mean?** Every alert explains itself, including when it's harmless. | ![Local network](docs/screenshots/local-network.png) **Local network.** Your NAS, phone and servers, by the names you give them. |
-| ![Tiled half screen](docs/screenshots/tiled.png) **Tiled half screen.** On a narrow window the detail panel moves under the list. | |
+| ![Tiled half screen](docs/screenshots/tiled.png) **Tiled half screen.** On a narrow window the detail panel moves under the list. | ![Guide](docs/screenshots/guide.png) **Guide.** What everything means, hosted by the mascot, with a demo of its moods. |
 
 These are rendered from made-up data by `scripts/screenshots.py`, which runs the real dashboard offscreen with a throwaway home directory (no notifications, downloads or lookups). Re-run it after UI changes.
+
+## The mascot
+
+An optional companion next to the tabs (and, if you like, as the tray icon) that shows the most serious alert as a mood. It's **off by default**: pick the octopus or Tux under **Settings → Mascot** or from the tray icon's right-click menu. It's just for fun. Everything it shows is also in the list and the tray color, so turning it off loses nothing.
+
+<p align="center">
+<img src="docs/mascot/octopus.gif" width="280" alt="The octopus running through its moods">
+<img src="docs/mascot/tux.gif" width="280" alt="Tux running through his moods">
+</p>
+
+The octopus's whole body takes the alert color. Tux carries a shield in the alert color, with a check mark when all is clear and "!" otherwise; where he holds it shows how serious things are.
+
+<table>
+<tr><th>Octopus</th><th>Tux</th><th>What it means</th></tr>
+<tr><td><img src="docs/mascot/octopus-relaxed.png" width="72" alt="Octopus: Relaxed"></td><td><img src="docs/mascot/tux-relaxed.png" width="72" alt="Tux: Relaxed"></td><td><b>Relaxed</b><br>Nothing is flagged. The octopus juggles network cables; Tux rests his green shield at his side, and it glints now and then.</td></tr>
+<tr><td><img src="docs/mascot/octopus-looking-around.png" width="72" alt="Octopus: Looking around"></td><td><img src="docs/mascot/tux-looking-around.png" width="72" alt="Tux: Looking around"></td><td><b>Looking around</b><br>The first 30 minutes, while it learns which apps normally go online. Tux scans with a magnifying glass.</td></tr>
+<tr><td><img src="docs/mascot/octopus-one-eyebrow-up.png" width="72" alt="Octopus: One eyebrow up"></td><td><img src="docs/mascot/tux-one-eyebrow-up.png" width="72" alt="Tux: One eyebrow up"></td><td><b>One eyebrow up</b><br>A <b>low</b> alert (yellow): something a bit unusual, often harmless. Look when it suits you.</td></tr>
+<tr><td><img src="docs/mascot/octopus-worried.png" width="72" alt="Octopus: Worried"></td><td><img src="docs/mascot/tux-worried.png" width="72" alt="Tux: Worried"></td><td><b>Worried</b><br>A <b>medium</b> alert (orange): worth a look. Open the app and read <i>What does this mean?</i></td></tr>
+<tr><td><img src="docs/mascot/octopus-alarmed.png" width="72" alt="Octopus: Alarmed"></td><td><img src="docs/mascot/tux-alarmed.png" width="72" alt="Tux: Alarmed"></td><td><b>Alarmed</b><br>A <b>high</b> alert (red): check now. Click the mascot to jump straight to the app.</td></tr>
+<tr><td><img src="docs/mascot/octopus-startled.png" width="72" alt="Octopus: Startled"></td><td><img src="docs/mascot/tux-startled.png" width="72" alt="Tux: Startled"></td><td><b>Startled</b><br>An alert just got more serious (a quick jump).</td></tr>
+<tr><td><img src="docs/mascot/octopus-blocking.png" width="72" alt="Octopus: Blocking"></td><td><img src="docs/mascot/tux-blocking.png" width="72" alt="Tux: Blocking"></td><td><b>Blocking</b><br>You blocked an app and it worked: Tux swings his sword, the octopus snips the app's cable. It never blocks anything on its own.</td></tr>
+<tr><td><img src="docs/mascot/octopus-cheering.png" width="72" alt="Octopus: Cheering"></td><td><img src="docs/mascot/tux-cheering.png" width="72" alt="Tux: Cheering"></td><td><b>Cheering</b><br>Everything is clear again.</td></tr>
+<tr><td><img src="docs/mascot/octopus-dozing.png" width="72" alt="Octopus: Dozing"></td><td><img src="docs/mascot/tux-dozing.png" width="72" alt="Tux: Dozing"></td><td><b>Dozing</b><br>Nothing flagged for 10 minutes. Still watching: the tray icon stays awake.</td></tr>
+<tr><td><img src="docs/mascot/octopus-waking-up.png" width="72" alt="Octopus: Waking up"></td><td><img src="docs/mascot/tux-waking-up.png" width="72" alt="Tux: Waking up"></td><td><b>Waking up</b><br>You clicked it. With something flagged, a click jumps to the most serious alert instead.</td></tr>
+</table>
+
+Each mascot has its own voice too: a line for its mood leads its tooltip, and it says something when the alert level changes or you click it (turn that off under **Quips**). New to the app? The **Guide** tab explains the colors, columns and actions, and its **Play demo** button runs the mascot through every mood.
+
+These pictures are rendered by `scripts/screenshots.py` into `docs/mascot/`, along with the screenshots.
 
 ## Your own blocklist
 
